@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/
+runs/
+ppe_dataset/
+videos/
+yolo11n/
+yolo11n (2)/
