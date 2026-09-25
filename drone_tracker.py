@@ -22,7 +22,7 @@ ppe_last_logged = {}                                              # (사람 ID, 
 no_vest_until = 0                                                 # 안전조끼 미착용 경고가 끝나는 시간
 pose_results = None                                               # 가장 최근 관절 감지 결과 저장
 fall_until = {}                                                   # 추적 ID별 경고 종료 시간
-danger_previous_ids = set()                                       # 이전 프레임에 위험구역 안에 있던 사람 ID
+danger_previous_ids = set()                                       # 이전 프레임에 위험구역 안에 있던 사람 ID\
 danger_last_logged = {}                                           # ID별 마지막 위험구역 기록 시각
 show_ppe = True                                                   # 거리 영상에서는 안전장비 경고를 표시하지 않음
 track_history = {}                                                # track_history 딕셔너리에 각 추적 ID별 이동 좌표 기록을 저장 / {}=비어 있는 딕셔너리 생성 / 나중에 ID마다 좌표 목록을 따로 보관
@@ -40,8 +40,8 @@ is_dragging = False                                               # 현재 드�
 last_zoom = None                                                  # 마지막으로 확대된 화면 저장
 last_zoom_time = 0                                                # 마지막으로 사람을 감지한 시간 저장
 tool_mode = "SELECT"  
-DISPLAY_WIDTH = 960                                               # 실제로 보여줄 창 너비
-DISPLAY_HEIGHT = 540                                              # 실제로 보여줄 창 높이                            
+DISPLAY_WIDTH = 1440                                               # 실제로 보여줄 창 너비
+DISPLAY_HEIGHT = 810                                              # 실제로 보여줄 창 높이                            
                 # 현재 도구: 선택, 확대, 이동
 def select_person(event, mouse_x, mouse_y, flags, param):
     global selected_id, drag_start, drag_end, drag_box, is_dragging, tool_mode
