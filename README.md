@@ -8,8 +8,10 @@
 현재는 로컬 영상과 실시간 스트리밍 영상을 이용해 기능을 검증했으며, 향후 DJI Mavic 3 Classic의 촬영 영상을 연동하여 실제 드론 기반 안전 관제 환경으로 확장하는 것을 목표로 합니다.
 
 ## 실행 화면
-
 ![AI 기반 실시간 드론 안전 관제 실행 화면](docs/images/main_screen.png)
+
+## 시연 영상
+[▶ 드론 안전 관제 시스템 시연 영상 보기](docs/drone_safety_demo.mp4)
 
 ## 핵심 모델 구성
 > 객체 탐지: `model = YOLO("models/yolo11s.pt")`  
