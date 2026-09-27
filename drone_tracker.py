@@ -6,7 +6,7 @@ import time  # time 모듈을 불러옴 / 프레임 처리 시간을 측정해�
              #import = 파이썬에서 기능을 불러온다
              #time = 시간 측정 기능이 들어있는 파이썬 모듈
 
-youtube_url = "https://www.youtube.com/watch?v=49CcWK-UqDQ"    # 유튜브 영상 주소
+youtube_url = "https://www.youtube.com/watch?v=C3hW1VrwmNc"    # 유튜브 영상 주소
 ydl_opts = {}                                                     # 별도 영상 형식을 강제로 지정하지 않고 yt-dlp가 자동 선택
 with yt_dlp.YoutubeDL(ydl_opts) as ydl:                           # yt-dlp 실행 준비
     info = ydl.extract_info(youtube_url, download=False)          # 유튜브 영상 정보 가져오기
@@ -40,8 +40,9 @@ is_dragging = False                                               # 현재 드�
 last_zoom = None                                                  # 마지막으로 확대된 화면 저장
 last_zoom_time = 0                                                # 마지막으로 사람을 감지한 시간 저장
 tool_mode = "SELECT"  
-DISPLAY_WIDTH = 1440                                               # 실제로 보여줄 창 너비
-DISPLAY_HEIGHT = 810                                              # 실제로 보여줄 창 높이                            
+DISPLAY_WIDTH = 1440                                              # 실제로 보여줄 창 너비
+DISPLAY_HEIGHT = 810                                              # 실제로 보여줄 창 높이 
+zoom_window_ready = False                                         # False: 확대창의 앞쪽 고정 설정을 아직 하지 않음                 
                 # 현재 도구: 선택, 확대, 이동
 def select_person(event, mouse_x, mouse_y, flags, param):
     global selected_id, drag_start, drag_end, drag_box, is_dragging, tool_mode
@@ -50,6 +51,7 @@ def select_person(event, mouse_x, mouse_y, flags, param):
     mouse_y = int(mouse_y * 1080 / DISPLAY_HEIGHT)
     if event == cv2.EVENT_LBUTTONDOWN:
             # 화면 위쪽 도구 버튼 클릭
+        print("마우스 클릭:", mouse_x, mouse_y)
         if mouse_y <= 50:
 
             if 10 <= mouse_x <= 110:
@@ -75,6 +77,7 @@ def select_person(event, mouse_x, mouse_y, flags, param):
 
             elif 450 <= mouse_x <= 550:
                 tool_mode = "DANGER"       # 위험구역 지정 모드
+                is_dragging = False        # 진행 중이던 ZOOM 영역 생성을 취소
                 is_setting_danger = False  # 지정 중 상태 초기화
                 danger_start = None        # 첫 좌표 초기화
                 danger_end = None          # 끝 좌표 초기화    
@@ -88,19 +91,10 @@ def select_person(event, mouse_x, mouse_y, flags, param):
                     break
 
         elif tool_mode == "ZOOM":
-            if not is_dragging:
-                drag_start = (mouse_x, mouse_y)  # 첫 클릭: 시작점
-                drag_end = drag_start
-                is_dragging = True
-            else:
-                drag_end = (mouse_x, mouse_y)  # 두 번째 클릭: 끝점
-                is_dragging = False
-
-                x1, x2 = sorted((drag_start[0], drag_end[0]))
-                y1, y2 = sorted((drag_start[1], drag_end[1]))
-
-                if x2 - x1 > 20 and y2 - y1 > 20:
-                    drag_box = (x1, y1, x2, y2)
+            drag_start = (mouse_x, mouse_y)  # 드래그 시작 좌표
+            drag_end = drag_start
+            is_dragging = True               # 마우스를 끌고 있는 상태
+            
         elif tool_mode == "MOVE" and drag_box is not None:
             x1, y1, x2, y2 = drag_box
             box_w = x2 - x1
@@ -120,7 +114,14 @@ def select_person(event, mouse_x, mouse_y, flags, param):
             danger_end = danger_start
             is_setting_danger = True
     elif event == cv2.EVENT_LBUTTONUP:
-        if tool_mode == "DANGER" and is_setting_danger and danger_start is not None:
+        if tool_mode == "ZOOM" and is_dragging and drag_start is not None:
+            drag_end = (mouse_x, mouse_y)  # 마우스를 놓은 좌표
+            is_dragging = False            # 드래그 종료
+            x1, x2 = sorted((drag_start[0], drag_end[0]))
+            y1, y2 = sorted((drag_start[1], drag_end[1]))
+            if x2 - x1 > 20 and y2 - y1 > 20:
+                drag_box = (x1, y1, x2, y2)  # 확대할 영역 확정
+        elif tool_mode == "DANGER" and is_setting_danger and danger_start is not None:
             danger_end = (mouse_x, mouse_y)
             is_setting_danger = False
             x1, x2 = sorted((danger_start[0], danger_end[0]))
@@ -133,14 +134,11 @@ def select_person(event, mouse_x, mouse_y, flags, param):
         elif is_setting_danger:
             danger_end = (mouse_x, mouse_y)  # 위험구역이 마우스를 따라감
 
-    
-
 cv2.namedWindow("Drone Tracking")
 cv2.setMouseCallback("Drone Tracking", select_person)
 cap = cv2.VideoCapture(stream_url)                            # 유튜브 실시간 영상 연결
 #cap = cv2.VideoCapture("http://192.168.219.134:8080/video")
                          #이 부분은 카메라 주소 입력
-
 while True:
     start_time = time.time()                                               # start_time 변수에 현재 시간을 대입 / time.time()=현재 시각을 초 단위 숫자로 가져오는 함수 / 프레임 처리가 시작된 시간을 기록
     ret, frame = cap.read()
@@ -153,10 +151,9 @@ while True:
         cap = cv2.VideoCapture(stream_url)
         continue
     frame_count += 1  # 영상 한 장을 읽을 때마다 숫자 1 증가
-    results = model.track(frame, device="mps", persist=True, tracker="bytetrack.yaml", conf=0.10, iou=0.5, classes=[0, 1, 2, 3, 5, 7, 14, 15, 16], imgsz=704, verbose=False)  # ByteTrack으로 추적 ID 생성
+    results = model.track(frame, device="mps", persist=True, tracker="bytetrack.yaml", conf=0.10, iou=0.5, classes=[0, 1, 2, 3, 5, 7, 14, 15, 16], imgsz=832, verbose=False)  # ByteTrack으로 추적 ID 생성
     # results 변수에 추적 결과를 대입 / frame=현재 영상 프레임 / persist=True=이전 프레임의 추적 ID 유지 / conf=0.10=신뢰도 15% 이상 사용 / iou=0.5=중복 박스 억제 기준 / classes=[0, 2]=사람(person)과 자동차(car)만 탐지 / imgsz=1920=YOLO가 분석할 입력 이미지 크기를 크게 해서 멀리 있는 작은 사람의 특징을 더 잘 보게 함
     boxes = results[0].boxes                                              #boxes 변수에 탐지된 박스 목록을 대입 / results[0]=현재 프레임의 탐지 결과 / .boxes=탐지된 객체들의 박스 정보
-    
     if frame_count % 10 == 0:  # 10프레임마다 한 번만 PPE 검사
         ppe_results = ppe_model.predict(
             frame,                    # 현재 영상 화면 한 장
@@ -458,10 +455,17 @@ while True:
                 interpolation=cv2.INTER_LANCZOS4  # 확대 화질 개선
             )
             blurred = cv2.GaussianBlur(area_zoom, (0, 0), 1.0)
-            area_zoom = cv2.addWeighted(area_zoom, 1.5, blurred, -0.5, 0)  # 확대 화면 선명화
+            area_zoom = cv2.addWeighted(area_zoom, 1.5, blurred, -0.5, 0)   # 확대 화면 선명화
 
+        if not zoom_window_ready:
+            cv2.namedWindow("Area Zoom", cv2.WINDOW_AUTOSIZE)
             cv2.imshow("Area Zoom", area_zoom)
-            cv2.moveWindow("Area Zoom", 980, 50)  # 확대 창을 오른쪽으로 이동
+            cv2.setWindowProperty("Area Zoom", cv2.WND_PROP_TOPMOST, 1)
+            cv2.moveWindow("Area Zoom", 980, 50)
+            zoom_window_ready = True
+        else:
+            cv2.imshow("Area Zoom", area_zoom)
+
     buttons = [
         ("SELECT", 10, 110),
         ("ZOOM", 120, 220),
