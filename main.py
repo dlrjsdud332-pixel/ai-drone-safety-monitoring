@@ -1,9 +1,12 @@
 import sys
 import cv2                                      # 영상 프레임 읽기
+from PySide6.QtWidgets import QSlider           # 재생 위치 조절 막대
 from PySide6.QtCore import QPoint, QRect, Signal  # 좌표와 사각형, 선택 완료 신호
 from PySide6.QtWidgets import QRubberBand  # 드래그 선택 사각형
 from PySide6.QtCore import QTimer          # 일정 간격으로 화면 갱신
+from PySide6.QtWidgets import QLineEdit
 from PySide6.QtGui import QImage, QPixmap  # OpenCV 영상을 UI 이미지로 변환
+from PySide6.QtGui import QShortcut, QKeySequence  # Esc 단축키 설정
 from PySide6.QtWidgets import QSizePolicy  # 영상 영역의 크기 조절
 from PySide6.QtGui import QPolygonF        # 여러 점으로 만든 다각형
 from pathlib import Path                   # 파일 경로와 이름 처리
@@ -24,6 +27,7 @@ class VideoLabel(QLabel):
         self.zone_enabled = False
         self.zone_points = []                           # 작성 중인 구역의 점
         self.zones = []                                 # 완성한 구역 목록
+        self.selected_zone = None                       # 삭제할 구역 번호, None은 선택 없음
         self.zone_level = "위험"                         # 새 구역에 적용할 등급
         self.moving_point = None                        # 이동 중인 구역과 점 번호
         self.drag_start = None
@@ -63,7 +67,7 @@ class VideoLabel(QLabel):
         return QRect(left, top, pw, ph)                  # 실제 영상이 표시되는 영역
 
     def keyPressEvent(self, event):
-        if self.zone_enabled and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        if self.zone_enabled and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):  # 엔터·스페이스로 구역 완성
             if len(self.zone_points) >= 3:
                 self.zones.append({
                     "points": self.zone_points.copy(),  # 현재 점 목록 보관
@@ -80,6 +84,14 @@ class VideoLabel(QLabel):
             self.update()
             return
 
+        if self.zone_enabled and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):  # 선택 구역 삭제
+            if self.selected_zone is not None:
+                self.zones.pop(self.selected_zone)  # 선택한 구역만 제거
+                self.selected_zone = None  # 선택 초기화
+                self.moving_point = None  # 점 이동 초기화
+                self.update()  # 화면 다시 그리기
+            return
+
         super().keyPressEvent(event)
 
     def paintEvent(self, event):
@@ -92,7 +104,7 @@ class VideoLabel(QLabel):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         colors = {"주의": "#FFD54F", "경고": "#FF9800", "위험": "#FF5252"}
 
-        def draw_zone(saved_points, level, closed):
+        def draw_zone(saved_points, level, closed, selected=False):  # 선택 여부 받기
             points = [
                 QPointF(rect.x() + p.x() * rect.width(),
                         rect.y() + p.y() * rect.height())
@@ -111,7 +123,7 @@ class VideoLabel(QLabel):
                 painter.setBrush(fill_color)
                 painter.drawPolygon(QPolygonF(points))
 
-            painter.setPen(QPen(color, 1))
+            painter.setPen(QPen(color, 2 if selected else 1))  # 선택한 구역만 선을 굵게
             for i in range(1, len(points)):
                 painter.drawLine(points[i - 1], points[i])
             if closed and len(points) >= 3:
@@ -121,8 +133,8 @@ class VideoLabel(QLabel):
             for point in points:
                 painter.drawEllipse(point, 3, 3)
 
-        for zone in self.zones:
-            draw_zone(zone["points"], zone["level"], True)  # 완성한 구역 표시
+        for i, zone in enumerate(self.zones):  # 구역 번호와 내용 가져오기
+            draw_zone(zone["points"], zone["level"], True, i == self.selected_zone)  # 선택 구역 표시
 
         draw_zone(self.zone_points, self.zone_level, False) # 작성 중인 구역 표시
         painter.end()
@@ -145,7 +157,9 @@ class VideoLabel(QLabel):
                     py = rect.y() + point.y() * rect.height()
                     if (pos.x() - px) ** 2 + (pos.y() - py) ** 2 <= 100:
                         self.moving_point = (zone_index, point_index)
-                        return                          # 가까운 점을 잡아서 이동
+                        self.selected_zone = zone_index  # 클릭한 구역 선택
+                        self.update()  # 선택 표시 즉시 반영
+                        return
 
             x = (pos.x() - rect.x()) / rect.width()
             y = (pos.y() - rect.y()) / rect.height()
@@ -202,10 +216,43 @@ window.setMinimumSize(1000, 650)  # 창을 줄일 수 있는 최소 크기
 
 window.setStyleSheet("""QMainWindow {background-color: #0B1420;}QLabel {color: #E8F0FA;font-size: 28px;font-weight: bold;}""")  # 배경색과 글자 모양 설정
 
-container = QWidget()  # 세 구역을 담을 바탕
-layout = QHBoxLayout(container)  # 구역을 가로로 배치
-layout.setContentsMargins(16, 16, 16, 16)  # 왼쪽·위·오른쪽·아래 여백
-layout.setSpacing(12)  # 구역 사이 간격
+container = QWidget()
+root_layout = QVBoxLayout(container)                     # 상단 제목과 본문을 세로 배치
+root_layout.setContentsMargins(16, 16, 16, 16)
+root_layout.setSpacing(12)
+
+header = QFrame()
+header.setStyleSheet("background: #111F2E; border-radius: 10px;")
+header_layout = QHBoxLayout(header)
+header_layout.setContentsMargins(18, 12, 18, 12)
+
+app_title = QLabel("드론 안전 관제")
+app_title.setStyleSheet("color: #E8F0FA; font-size: 26px; font-weight: bold;")
+
+subtitle = QLabel("AI SAFETY MONITOR")
+subtitle.setStyleSheet("color: #91A7BD; font-size: 12px; font-weight: normal;")
+
+status_label = QLabel("● 대기 중")
+status_label.setStyleSheet("""
+    color: #2EDDB5;
+    background: #12313A;
+    border: 1px solid #20606C;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 14px;
+""")
+
+header_layout.addWidget(app_title)
+header_layout.addWidget(subtitle)
+header_layout.addStretch()                               # 상태 표시를 오른쪽으로 밀기
+header_layout.addWidget(status_label)
+root_layout.addWidget(header)
+
+content = QWidget()
+layout = QHBoxLayout(content)                            # 기존 세 구역을 담을 본문
+layout.setContentsMargins(0, 0, 0, 0)
+layout.setSpacing(12)
+root_layout.addWidget(content, 1)                        # 남은 공간을 본문에 배정
 
 left_panel = QFrame()  # 제목·버튼·목록을 담을 왼쪽 영역
 left_panel.setObjectName("library")
@@ -288,6 +335,8 @@ timer = QTimer(window)  # 영상 화면을 갱신할 타이머
 def stop_video():  # 재생 중지와 영상 파일 연결 해제
     global cap  # 함수 밖의 cap 사용
     timer.stop()
+    video_slider.setEnabled(False)  # 영상 연결이 끝나면 이동 비활성화
+    status_label.setText("● 대기 중")  # 정지할 때 표시
     if cap is not None:
         cap.release()
         cap = None
@@ -352,6 +401,16 @@ def update_frame():  # 영상 한 장을 읽어 가운데에 표시
     pixmap = QPixmap.fromImage(image)  # 화면에 표시할 이미지 생성
     video_panel.setPixmap(pixmap.scaled(video_panel.contentsRect().size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))  # 비율 유지
     update_zoom()  # 메인 영상과 함께 확대 화면 갱신
+    if not video_slider.isSliderDown():  # 손잡이를 잡고 있지 않을 때
+        position = max(0, int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1)  # 현재 프레임
+        video_slider.setValue(position)  # 슬라이더 위치 갱신
+        fps = cap.get(cv2.CAP_PROP_FPS)  # 영상의 초당 프레임 수
+        if fps > 0:
+            current = int(position / fps)  # 현재 위치를 초로 변환
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps)  # 전체 영상 길이
+            if not video_current.hasFocus():  # 입력 중에는 현재 시간을 덮어쓰지 않음
+                video_current.setText(f"{current // 60:02d}:{current % 60:02d}")
+            video_time.setText(f"/ {total // 60:02d}:{total % 60:02d}")  # 전체 시간
 def play_video(item):
     global cap, last_frame, zoom_roi  # 영상과 확대 영역 변수 사용
     stop_video()  # 이전 영상 연결 해제
@@ -367,10 +426,16 @@ def play_video(item):
         return
     fps = cap.get(cv2.CAP_PROP_FPS)  # 영상의 초당 프레임 수
     fps = fps if 1 <= fps <= 120 else 30  # FPS 정보가 잘못되면 30 사용
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # 전체 프레임 수
+    video_slider.setRange(0, max(0, total_frames - 1))  # 이동 범위 설정
+    video_slider.setValue(0)  # 시작 위치 초기화
+    video_slider.setEnabled(total_frames > 1)  # 이동할 장면이 있으면 활성화
     window.setWindowTitle(f"드론 안전 관제 · {item.text()}")  # 재생 중인 파일 이름 표시
+    video_title.setText(f"관제 영상 · {item.text()}")  # 선택한 파일 이름 표시
     update_frame()  # 첫 화면 바로 표시
     if cap is not None:
         timer.start(max(1, round(1000 / fps)))    # FPS에 맞춰 반복 갱신
+        status_label.setText("● 재생 중")  # 새 영상을 시작할 때 표시
 
 timer.timeout.connect(update_frame)               # 타이머가 울리면 다음 프레임 표시
 video_list.itemDoubleClicked.connect(play_video)  # 목록 더블클릭과 재생 연결
@@ -390,19 +455,16 @@ zoom_button.setStyleSheet("""
     QPushButton:hover { background: #23415B; }
     QPushButton:checked { background: #167D96; color: white; border-color: #209BB8; }
 """)
-center_layout.addWidget(zoom_button)              # 영상 위에 버튼 배치
 zone_level = QComboBox()                          # 선택한 위험 등급을 담는 메뉴
 zone_level.addItems(["주의", "경고", "위험"])        # 메뉴에 표시할 세 가지 등급
 zone_level.setCurrentText("위험")                  # 처음에는 위험 등급을 선택
 zone_level.currentTextChanged.connect(video_panel.set_zone_level)  # 선택 메뉴와 구역 색 연결
 zone_level.setMinimumHeight(40)                   # 메뉴의 최소 높이
 zone_level.setStyleSheet("background: #182C40; color: #DCE6F2; border: 1px solid #263B50; border-radius: 6px; padding: 6px;")
-center_layout.addWidget(zone_level)               # 확대 버튼 아래에 메뉴 배치
 zone_button = QPushButton("＋ 구역 추가")            # 드래그로 구역을 만들 때 사용할 버튼
 zone_button.setCheckable(True)                    # 누르면 켜지고, 다시 누르면 꺼짐
 zone_button.setMinimumHeight(40)                  # 버튼의 최소 높이
 zone_button.setStyleSheet(zoom_button.styleSheet())  # 확대 버튼과 같은 디자인
-center_layout.addWidget(zone_button)  # 등급 메뉴 아래에 버튼 배치
 
 def toggle_zone(enabled):
     if enabled:
@@ -415,7 +477,97 @@ def toggle_zoom(enabled):  # enabled: 확대 버튼이 켜졌는지 여부
 
 zone_button.toggled.connect(toggle_zone)  # 구역 버튼 상태가 바뀌면 실행
 zoom_button.toggled.connect(toggle_zoom)  # 확대 버튼 상태가 바뀌면 실행
+video_title = QLabel("관제 영상 · 선택된 영상 없음")  # 현재 영상 이름 표시
+video_title.setStyleSheet("color: #E8F0FA; font-size: 16px; font-weight: bold;")  # 제목 모양
+center_layout.addWidget(video_title)  # 영상 위에 제목 배치
 center_layout.addWidget(video_panel, 1)           # 영상이 남는 공간을 채움
+video_slider = QSlider(Qt.Orientation.Horizontal)  # 가로 슬라이더
+video_slider.setRange(0, 0)  # 영상을 열기 전에는 이동 범위 없음
+video_slider.setEnabled(False)  # 영상 연결 전에는 비활성화
+video_slider.setStyleSheet("""
+    QSlider::groove:horizontal {
+        height: 6px;
+        background: #263B50;
+        border-radius: 3px;
+    }
+    QSlider::handle:horizontal {
+        width: 14px;
+        margin: -4px 0;
+        background: #2EDDB5;
+        border-radius: 7px;
+    }""")                                   # 막대와 손잡이 색상
+center_layout.addWidget(video_slider)       # 영상 아래에 배치
+time_layout = QHBoxLayout()  # 현재 시간과 전체 시간을 한 줄로 배치
+time_layout.addStretch()  # 시간 표시를 오른쪽으로 이동
+video_current = QLineEdit("00:00")  # 클릭해서 입력할 현재 시간
+video_current.setFixedWidth(70)  # 입력칸 너비
+video_current.setAlignment(Qt.AlignmentFlag.AlignCenter)  # 가운데 정렬
+video_current.setStyleSheet("color:#2EDDB5; background:#111F2E; border:1px solid #263B50; border-radius:4px; padding:4px;")
+video_time = QLabel("/ 00:00")  # 전체 시간 표시
+video_time.setStyleSheet("color:#91A7BD; font-size:12px;")
+time_layout.addWidget(video_current)
+time_layout.addWidget(video_time)
+center_layout.addLayout(time_layout)
+def jump_to_time():
+    if cap is None:
+        return
+    try:
+        minutes, seconds = map(int, video_current.text().strip().split(":"))  # 분과 초 분리
+        if minutes < 0 or not 0 <= seconds < 60:
+            raise ValueError
+    except ValueError:
+        video_current.setToolTip("02:30처럼 분:초로 입력해 주세요")  # 잘못된 입력 안내
+        video_current.selectAll()
+        return
+    fps = cap.get(cv2.CAP_PROP_FPS)  # 초당 프레임 수
+    if fps <= 0:
+        return
+    position = min(int((minutes * 60 + seconds) * fps), video_slider.maximum())  # 영상 끝을 넘지 않게 제한
+    was_playing = timer.isActive()  # 기존 재생 상태 기억
+    timer.stop()
+    video_current.clearFocus()  # 입력을 끝내고 시간 자동 갱신 허용
+    cap.set(cv2.CAP_PROP_POS_FRAMES, position)  # 입력한 장면으로 이동
+    update_frame()  # 이동한 화면 표시
+    if was_playing and cap is not None:
+        timer.start()  # 재생 중이었다면 계속 재생
+
+video_current.returnPressed.connect(jump_to_time)  # Enter로 시간 이동
+def cancel_time_input():
+    current = 0  # 영상이 없으면 0초
+    if cap is not None:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps > 0:
+            current = int(video_slider.value() / fps)  # 현재 영상 위치
+    video_current.setText(f"{current // 60:02d}:{current % 60:02d}")  # 현재 시간 복원
+    video_current.clearFocus()  # 시간 입력 종료
+
+cancel_shortcut = QShortcut(QKeySequence("Escape"), video_current)  # 입력칸의 Esc
+cancel_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)  # 입력칸에서만 작동
+cancel_shortcut.activated.connect(cancel_time_input)  # Esc로 입력 취소
+
+seek_was_playing = False  # 드래그 전에 재생 중이었는지 저장
+def begin_seek():
+    global seek_was_playing
+    seek_was_playing = timer.isActive()  # 기존 재생 상태 기억
+    timer.stop()  # 드래그 중에는 재생 잠시 멈춤
+
+def finish_seek():
+    if cap is None:
+        return
+    position = video_slider.value()  # 손잡이를 놓은 위치
+    cap.set(cv2.CAP_PROP_POS_FRAMES, position)  # 해당 프레임으로 이동
+    update_frame()  # 이동한 장면 표시
+    if seek_was_playing and cap is not None:
+        timer.start()  # 원래 재생 중이었다면 이어서 재생
+video_slider.sliderPressed.connect(begin_seek)  # 손잡이를 잡으면 실행
+video_slider.sliderReleased.connect(finish_seek)  # 손잡이를 놓으면 실행
+
+tools_layout = QHBoxLayout()                # 도구를 가로로 배치
+tools_layout.setSpacing(8)                  # 도구 사이 간격
+tools_layout.addWidget(zoom_button, 2)      # 확대 영역 선택
+tools_layout.addWidget(zone_level, 1)       # 주의·경고·위험 선택
+tools_layout.addWidget(zone_button, 2)      # 구역 추가
+center_layout.addLayout(tools_layout)       # 영상 바로 아래에 표시
 playback_layout = QHBoxLayout()                   # 버튼을 가로로 배치
 play_button = QPushButton("▶ 재생")                # 재생 버튼
 pause_button = QPushButton("Ⅱ 일시정지")            # 일시정지 버튼
@@ -432,23 +584,29 @@ for button in (play_button, pause_button, stop_button):  # 세 버튼에 같은 
 def resume_video():  # 일시정지한 영상 이어서 재생
     if cap is not None:
         timer.start()  # 기존 프레임 간격으로 다시 재생
+        status_label.setText("● 재생 중")  # 이어서 재생할 때 표시
     else:
         item = video_list.currentItem()  # 목록에서 선택한 영상
         if item is not None:
             play_video(item)  # 열린 영상이 없으면 처음부터 재생
 
-def pause_video():  # 현재 화면에서 일시정지
-    timer.stop()  # 화면 갱신만 멈추고 영상 연결은 유지
+def pause_video():
+    if cap is not None and timer.isActive():  # 재생 중일 때만 일시정지
+        timer.stop()
+        status_label.setText("● 일시정지")
 
 def reset_video():
     global last_frame, zoom_roi  # 원본 프레임과 확대 영역 변경
     stop_video()  # 재생 중지와 영상 연결 해제
+    video_slider.setRange(0, 0)  # 정지하면 슬라이더 초기화
+    video_time.setText("00:00 / 00:00")  # 정지하면 시간 표시 초기화
     last_frame = None  # 원본 프레임 초기화
     zoom_roi = None  # 확대 좌표 초기화
     zoom_button.setChecked(False)  # 확대 선택 모드 끄기
     zoom_panel.setText("확대할 영역을 선택해 주세요")  # 확대 화면 초기화
     video_panel.setText("관제 영상\n\n영상을 선택해 주세요")  # 메인 화면 초기화
     window.setWindowTitle("드론 안전 관제")  # 창 제목 초기화
+    video_title.setText("관제 영상 · 선택된 영상 없음")  # 정지하면 제목 초기화
 
 play_button.clicked.connect(resume_video)  # 재생 버튼과 함수 연결
 pause_button.clicked.connect(pause_video)  # 일시정지 버튼과 함수 연결
