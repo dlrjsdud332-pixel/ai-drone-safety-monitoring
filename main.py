@@ -1,5 +1,6 @@
 import sys
 import cv2                                      # 영상 프레임 읽기
+from ai_worker import AIWorker  # 별도 스레드에서 AI 분석
 from PySide6.QtWidgets import QSlider           # 재생 위치 조절 막대
 from PySide6.QtCore import QPoint, QRect, Signal  # 좌표와 사각형, 선택 완료 신호
 from PySide6.QtWidgets import QRubberBand  # 드래그 선택 사각형
@@ -19,11 +20,13 @@ from PySide6.QtWidgets import QComboBox    # 여러 항목 중 하나를 선택�
 from PySide6.QtCore import Qt
 
 class VideoLabel(QLabel):
-    region_selected = Signal(QRect)
+    region_selected = Signal(QRect)  # 기존 줄
+    target_clicked = Signal(QPoint)  # 대상을 클릭한 화면 좌표 전달
 
     def __init__(self, text):
         super().__init__(text)
         self.zoom_enabled = False
+        self.select_enabled = False                     # False: 대상 선택 모드 꺼짐
         self.zone_enabled = False
         self.zone_points = []                           # 작성 중인 구역의 점
         self.zones = []                                 # 완성한 구역 목록
@@ -33,6 +36,12 @@ class VideoLabel(QLabel):
         self.drag_start = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
+
+    def set_select_mode(self, enabled):
+        self.select_enabled = enabled  # True면 클릭으로 대상 선택
+        self.drag_start = None  # 진행 중인 확대 드래그 해제
+        self.rubber_band.hide()  # 드래그 테두리 숨기기
+        self.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ArrowCursor)
 
     def set_zoom_mode(self, enabled):
         self.zoom_enabled = enabled
@@ -140,6 +149,13 @@ class VideoLabel(QLabel):
         painter.end()
 
     def mousePressEvent(self, event):
+        if self.select_enabled and event.button() == Qt.MouseButton.LeftButton:
+            point = event.position().toPoint()  # 마우스로 누른 위치
+            rect = self.image_rect()  # 화면에서 실제 영상이 있는 영역
+            if rect is not None and rect.contains(point):
+                self.target_clicked.emit(point)  # 영상 내부 클릭만 전달
+            return  # 대상 선택 중에는 구역·확대 드래그 처리하지 않기    
+
         rect = self.image_rect()
 
         if self.zone_enabled and event.button() == Qt.MouseButton.LeftButton:
@@ -309,6 +325,11 @@ zoom_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
 zoom_panel.setStyleSheet("background: #0B1420; border-radius: 6px; color: #91A7BD; font-size: 14px;")
 
 event_title = QLabel("이벤트 기록")  # 경고 목록 제목
+zoom_name = QLabel(zoom_panel)  # 확대 화면 안에 이름 표시
+zoom_name.setStyleSheet("color: white; background: rgba(0, 0, 0, 150); padding: 6px 10px; border-radius: 5px; font-weight: bold;")
+zoom_name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)  # 마우스 클릭 방해 방지
+zoom_name.move(12, 12)  # 확대 화면 왼쪽 위에 고정
+zoom_name.hide()  # 대상 선택 전에는 숨김
 event_list = QListWidget()  # 감지된 경고를 표시할 목록
 
 right_layout.addWidget(zoom_title)
@@ -328,41 +349,118 @@ for panel in (video_panel,):  # 가운데 영상에만 기존 디자인 적용
 video_panel.setMinimumSize(1, 1)  # 큰 영상 때문에 창이 늘어나는 것 방지
 video_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
 cap = None  # 현재 열려 있는 영상
-last_frame = None  # 현재 화면의 원본 영상 보관
-zoom_roi = None  # 확대할 영역의 원본 좌표 보관
-timer = QTimer(window)  # 영상 화면을 갱신할 타이머
+last_frame = None                  # 현재 화면의 원본 영상 보관
+last_raw_frame = None              # 박스 없는 확대용 원본 영상
+zoom_roi = None                    # 확대할 영역의 원본 좌표 보관
+timer = QTimer(window)             # 영상 화면을 갱신할 타이머
+ai_worker = AIWorker(window)       # AI 작업 스레드 준비
+ai_task_id = 0                     # 영상이 바뀌었을 때 이전 분석 결과를 구분
+tracked_objects = []               # 현재 화면에서 선택할 수 있는 대상 목록
+selected_track_id = None           # 선택한 대상 ID, 처음에는 선택 없음
 
-def stop_video():  # 재생 중지와 영상 파일 연결 해제
-    global cap  # 함수 밖의 cap 사용
+def show_ai_result(frame, people, vehicles, objects, task_id, raw_frame):
+    global last_frame, tracked_objects, last_raw_frame
+    if task_id != ai_task_id or cap is None:
+        return
+    last_raw_frame = raw_frame                     # 같은 분석 결과의 원본 영상 보관
+    tracked_objects = objects  # 현재 대상의 ID와 좌표 저장
+    last_frame = frame.copy()  # 확대에 사용할 분석 화면 저장
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Qt용 색상 순서
+    height, width = rgb.shape[:2]
+    image = QImage(rgb.data, width, height, rgb.strides[0],
+                   QImage.Format.Format_RGB888).copy()  # Qt 이미지 생성
+    pixmap = QPixmap.fromImage(image)
+    video_panel.setPixmap(pixmap.scaled(
+        video_panel.contentsRect().size(),
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation
+    ))  # 분석 화면 표시
+    update_zoom()  # 오른쪽 확대 화면 갱신
+
+def show_ai_error(message):
+    event_list.addItem(f"AI 오류: {message}")  # 오류를 이벤트 목록에 표시
+
+ai_worker.result_ready.connect(show_ai_result)  # 분석 결과 받기
+ai_worker.error.connect(show_ai_error)  # 오류 내용 받기
+
+def stop_video():
+    global cap, ai_task_id  # 영상 연결과 작업 번호 사용
+    ai_task_id += 1  # 이전 영상의 분석 결과 무효화
     timer.stop()
     video_slider.setEnabled(False)  # 영상 연결이 끝나면 이동 비활성화
     status_label.setText("● 대기 중")  # 정지할 때 표시
     if cap is not None:
         cap.release()
         cap = None
-def update_zoom():  # 선택한 영역을 오른쪽 확대 화면에 표시
-    if last_frame is None or zoom_roi is None:
-        return  # 영상이나 선택 영역이 없으면 종료
-    x1, y1, x2, y2 = zoom_roi  # 확대 영역의 왼쪽 위와 오른쪽 아래 좌표
-    crop = last_frame[y1:y2, x1:x2]  # 원본에서 선택한 부분만 자르기
+def update_zoom():
+    global zoom_roi
+    if last_raw_frame is None:
+        return
+
+    if selected_track_id is not None:
+        target = next((obj for obj in tracked_objects
+                       if obj["id"] == selected_track_id), None)  # 선택한 ID의 현재 위치 찾기
+        if target is None:
+            zoom_name.hide()  # 대상을 놓치면 이름표 숨김
+            zoom_panel.clear()                                  # 대상을 놓치면 확대 화면 비우기
+            zoom_panel.setText("선택 대상 확인 중")
+            return
+        zoom_name.setText(f"{target['name']} · ID {target['id']}")  # 대상 이름과 추적 ID
+        zoom_name.adjustSize()  # 글자 길이에 맞춰 이름표 크기 조절
+        zoom_name.show()  # 이름표 표시
+        zoom_name.raise_()  # 영상 위에 표시
+        height, width = last_raw_frame.shape[:2]
+        x1, y1, x2, y2 = target["bbox"]
+        pad = 20
+        zoom_roi = (max(0, x1 - pad), max(0, y1 - pad),
+                    min(width, x2 + pad), min(height, y2 + pad))  # 이동한 위치로 확대 영역 갱신
+
+    if zoom_roi is None:
+        return
+    x1, y1, x2, y2 = zoom_roi
+    if selected_track_id is not None:
+        panel = zoom_panel.contentsRect()
+        ratio = panel.width() / max(1, panel.height())   # 확대 창의 가로·세로 비율
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2           # 대상 중심 위치
+        crop_h = max(y2 - y1, (x2 - x1) / ratio)         # 대상 전체가 들어가는 높이
+        crop_w = crop_h * ratio                         # 창과 같은 비율로 너비 계산
+
+        left = int(cx - crop_w / 2)
+        top = int(cy - crop_h / 2)
+        right = left + max(1, int(crop_w + 0.5))
+        bottom = top + max(1, int(crop_h + 0.5))
+        frame_h, frame_w = last_raw_frame.shape[:2]
+
+        crop = last_raw_frame[max(0, top):min(frame_h, bottom), max(0, left):min(frame_w, right)]
+        if crop.size == 0:
+            return
+        crop = cv2.copyMakeBorder(
+            crop,
+            max(0, -top), max(0, bottom - frame_h),
+            max(0, -left), max(0, right - frame_w),
+            cv2.BORDER_CONSTANT, value=(0, 0, 0)         # 영상 밖으로 나간 부분은 검정 여백
+        )
+    else:
+        crop = last_raw_frame[y1:y2, x1:x2]  
     if crop.size == 0:
         return  # 잘라낸 영상이 비어 있으면 종료
     rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)  # Qt 화면에 맞게 색상 순서 변경
     height, width = rgb.shape[:2]  # 잘라낸 영상의 세로와 가로
     image = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888).copy()  # Qt 이미지 생성
     pixmap = QPixmap.fromImage(image)  # 잘라낸 영상을 화면용 이미지로 변환
-    size = zoom_panel.contentsRect().size()  # 오른쪽 확대 화면 크기
+    size = zoom_panel.contentsRect().size()           # 확대 화면 크기
     scaled = pixmap.scaled(
         size,
-        Qt.AspectRatioMode.KeepAspectRatioByExpanding,  # 비율을 유지하며 화면을 꽉 채우기
-        Qt.TransformationMode.SmoothTransformation  # 부드럽게 확대
+        Qt.AspectRatioMode.KeepAspectRatio,           # 대상 전체가 보이도록 비율 유지
+        Qt.TransformationMode.SmoothTransformation    # 부드럽게 확대
     )
-    x = (scaled.width() - size.width()) // 2  # 가로에서 넘치는 부분의 절반
-    y = (scaled.height() - size.height()) // 2  # 세로에서 넘치는 부분의 절반
-    zoom_panel.setPixmap(scaled.copy(x, y, size.width(), size.height()))  # 중앙 부분만 표시
+    zoom_panel.setPixmap(scaled)                      # 가장자리를 자르지 않고 표시
 
 def select_zoom(rect):  # 화면에서 선택한 영역을 원본 영상 좌표로 변환
-    global zoom_roi  # 함수 밖의 확대 영역 변경
+    global zoom_roi, selected_track_id
+    selected_track_id = None                         # 드래그 확대는 고정 영역을 사용
+    zoom_name.hide()  # 드래그 확대에서는 대상 이름표 숨김
+    zoom_title.setText("확대 화면")  # 제목 초기화
     pixmap = video_panel.pixmap()
     if last_frame is None or pixmap is None or pixmap.isNull():
         return  # 영상이 없으면 종료
@@ -386,6 +484,39 @@ def select_zoom(rect):  # 화면에서 선택한 영역을 원본 영상 좌표�
 
 video_panel.region_selected.connect(select_zoom)  # 드래그 완료 신호 연결
 
+def select_target(point):
+    global zoom_roi, selected_track_id                   # 확대 영역과 선택한 ID를 변경
+    rect = video_panel.image_rect()                      # 화면에 표시된 영상 영역
+    if last_frame is None or rect is None:
+        return
+
+    height, width = last_frame.shape[:2]
+    x = (point.x() - rect.x()) * width / rect.width()      # 클릭 위치를 원본 영상 좌표로 변환
+    y = (point.y() - rect.y()) * height / rect.height()
+
+    candidates = []
+    for obj in tracked_objects:
+        x1, y1, x2, y2 = obj["bbox"]
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            candidates.append(obj)                       # 클릭한 위치에 있는 대상 저장
+
+    if not candidates:
+        return
+
+    target = min(candidates, key=lambda obj:             # 박스가 겹치면 작은 대상을 선택
+                 (obj["bbox"][2] - obj["bbox"][0]) *
+                 (obj["bbox"][3] - obj["bbox"][1]))
+    selected_track_id = target["id"]                    # 클릭한 대상의 ID를 기억
+    x1, y1, x2, y2 = target["bbox"]
+    pad = 20                                            # 대상 주변에 여백 추가
+    zoom_roi = (max(0, x1 - pad), max(0, y1 - pad),
+                min(width, x2 + pad), min(height, y2 + pad))
+    zoom_title.setText(f"선택 대상 · ID {target['id']}")    # 확대 화면 위에 대상 ID 표시
+    update_zoom()                                       # 오른쪽 확대 화면 갱신
+
+
+video_panel.target_clicked.connect(select_target)        # 대상 클릭과 함수 연결
+
 def update_frame():  # 영상 한 장을 읽어 가운데에 표시
     global last_frame  # 함수 밖의 현재 영상 변수 사용
     if cap is None:
@@ -394,13 +525,9 @@ def update_frame():  # 영상 한 장을 읽어 가운데에 표시
     if not ok:  # 영상이 끝났거나 읽지 못하면 중지
         stop_video()
         return
-    last_frame = frame.copy()  # 확대에 사용할 원본 프레임 보관
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # OpenCV 색상을 UI 색상 순서로 변경
-    height, width = rgb.shape[:2]  # 영상의 세로와 가로
-    image = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888).copy()
-    pixmap = QPixmap.fromImage(image)  # 화면에 표시할 이미지 생성
-    video_panel.setPixmap(pixmap.scaled(video_panel.contentsRect().size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))  # 비율 유지
-    update_zoom()  # 메인 영상과 함께 확대 화면 갱신
+    
+    ai_worker.submit(frame, ai_task_id)  # 현재 영상을 AI에 전달
+
     if not video_slider.isSliderDown():  # 손잡이를 잡고 있지 않을 때
         position = max(0, int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1)  # 현재 프레임
         video_slider.setValue(position)  # 슬라이더 위치 갱신
@@ -439,7 +566,11 @@ def play_video(item):
 
 timer.timeout.connect(update_frame)               # 타이머가 울리면 다음 프레임 표시
 video_list.itemDoubleClicked.connect(play_video)  # 목록 더블클릭과 재생 연결
-app.aboutToQuit.connect(stop_video)               # 프로그램 종료 시 영상 연결 해제
+def shutdown():
+    stop_video()  # 영상 재생 종료
+    ai_worker.stop()  # AI 종료 요청
+    ai_worker.wait()  # 진행 중인 분석이 끝날 때까지 기다리기
+app.aboutToQuit.connect(shutdown)  # 프로그램 종료 시 안전하게 정리
 layout.addWidget(left_panel, 2)                   # 왼쪽 너비 비중
 center_panel = QWidget()                          # 가운데 영상과 버튼을 담을 공간
 center_layout = QVBoxLayout(center_panel)         # 영상과 버튼을 위아래로 배치
@@ -461,22 +592,37 @@ zone_level.setCurrentText("위험")                  # 처음에는 위험 등�
 zone_level.currentTextChanged.connect(video_panel.set_zone_level)  # 선택 메뉴와 구역 색 연결
 zone_level.setMinimumHeight(40)                   # 메뉴의 최소 높이
 zone_level.setStyleSheet("background: #182C40; color: #DCE6F2; border: 1px solid #263B50; border-radius: 6px; padding: 6px;")
-zone_button = QPushButton("＋ 구역 추가")            # 드래그로 구역을 만들 때 사용할 버튼
-zone_button.setCheckable(True)                    # 누르면 켜지고, 다시 누르면 꺼짐
-zone_button.setMinimumHeight(40)                  # 버튼의 최소 높이
-zone_button.setStyleSheet(zoom_button.styleSheet())  # 확대 버튼과 같은 디자인
+zone_button = QPushButton("＋ 구역 추가")
+zone_button.setCheckable(True)
+zone_button.setMinimumHeight(40)
+zone_button.setStyleSheet(zoom_button.styleSheet())
+
+select_button = QPushButton("SELECT · 대상 선택")
+select_button.setCheckable(True)  # 누르면 켜지고 다시 누르면 꺼짐
+select_button.setMinimumHeight(40)
+select_button.setStyleSheet(zoom_button.styleSheet())  # 확대 버튼과 같은 디자인
+
+
+def toggle_select(enabled):
+    if enabled:
+        zoom_button.setChecked(False)  # 영역 확대 끄기
+        zone_button.setChecked(False)  # 구역 추가 끄기
+    video_panel.set_select_mode(enabled)  # 대상 선택 모드 전환
 
 def toggle_zone(enabled):
     if enabled:
-        zoom_button.setChecked(False)  # 확대 모드를 먼저 끔
-    video_panel.set_zone_mode(enabled)  # 구역 그리기 모드에 버튼 상태 전달
+        select_button.setChecked(False)  # 대상 선택 끄기
+        zoom_button.setChecked(False)  # 영역 확대 끄기
+    video_panel.set_zone_mode(enabled)
 
-def toggle_zoom(enabled):  # enabled: 확대 버튼이 켜졌는지 여부
+def toggle_zoom(enabled):
     if enabled:
-        zone_button.setChecked(False)  # 구역 추가 모드를 끔
+        select_button.setChecked(False)  # 대상 선택 끄기
+        zone_button.setChecked(False)  # 구역 추가 끄기
 
-zone_button.toggled.connect(toggle_zone)  # 구역 버튼 상태가 바뀌면 실행
-zoom_button.toggled.connect(toggle_zoom)  # 확대 버튼 상태가 바뀌면 실행
+select_button.toggled.connect(toggle_select)  # SELECT 버튼 연결
+zone_button.toggled.connect(toggle_zone)
+zoom_button.toggled.connect(toggle_zoom)
 video_title = QLabel("관제 영상 · 선택된 영상 없음")  # 현재 영상 이름 표시
 video_title.setStyleSheet("color: #E8F0FA; font-size: 16px; font-weight: bold;")  # 제목 모양
 center_layout.addWidget(video_title)  # 영상 위에 제목 배치
@@ -564,6 +710,7 @@ video_slider.sliderReleased.connect(finish_seek)  # 손잡이를 놓으면 실�
 
 tools_layout = QHBoxLayout()                # 도구를 가로로 배치
 tools_layout.setSpacing(8)                  # 도구 사이 간격
+tools_layout.addWidget(select_button, 2)    # SELECT를 확대 버튼 왼쪽에 배치
 tools_layout.addWidget(zoom_button, 2)      # 확대 영역 선택
 tools_layout.addWidget(zone_level, 1)       # 주의·경고·위험 선택
 tools_layout.addWidget(zone_button, 2)      # 구역 추가
@@ -599,7 +746,8 @@ def reset_video():
     global last_frame, zoom_roi  # 원본 프레임과 확대 영역 변경
     stop_video()  # 재생 중지와 영상 연결 해제
     video_slider.setRange(0, 0)  # 정지하면 슬라이더 초기화
-    video_time.setText("00:00 / 00:00")  # 정지하면 시간 표시 초기화
+    video_current.setText("00:00")  # 현재 시간 초기화
+    video_time.setText("/ 00:00")  # 전체 시간 초기화
     last_frame = None  # 원본 프레임 초기화
     zoom_roi = None  # 확대 좌표 초기화
     zoom_button.setChecked(False)  # 확대 선택 모드 끄기
@@ -615,5 +763,6 @@ center_layout.addLayout(playback_layout)  # 영상 아래에 버튼 줄 추가
 layout.addWidget(center_panel, 6)  # 가운데 공간을 메인 화면에 추가
 layout.addWidget(right_panel, 3)    # 오른쪽 너비 비중
 window.setCentralWidget(container)  # 세 구역을 메인 창에 연결
+ai_worker.start()                   # 별도 스레드에서 AI 모델 준비
 window.show()                       # 완성한 창을 화면에 표시
 sys.exit(app.exec())                # 클릭·키보드 입력을 기다리며 프로그램 유지
