@@ -365,6 +365,10 @@ tracked_objects = []               # 현재 화면에서 선택할 수 있는 �
 selected_track_id = None           # 선택한 대상 ID, 처음에는 선택 없음
 zone_previous = set()              # 이전 분석에서 구역 안에 있던 사람
 zone_last_logged = {}              # 사람·구역별 마지막 경고 기록 시간
+ppe_last_logged = {}               # 사람 ID와 미착용 항목별 마지막 기록 시간
+ppe_warning_until = 0.0            # 보호구 경고가 끝나는 시간
+zone_alert_rank = 0                # 구역 상태: 정상 0, 주의 1, 경고 2, 위험 3
+
 
 def save_zone_event(track_id, zone_number, level):
     path = Path(__file__).resolve().parent / "data" / "ui_zone_events.csv"  # main.py 기준 저장 위치
@@ -375,8 +379,26 @@ def save_zone_event(track_id, zone_number, level):
             writer.writerow(["time", "track_id", "zone_number", "level"])  # 처음에만 항목 이름 저장
         writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), track_id, zone_number, level])
 
+def update_safety_alert():
+    if cap is None:
+        return  # 영상이 없으면 기존 대기 표시 유지
+
+    ppe_rank = 2 if monotonic() < ppe_warning_until else 0  # 보호구 경고는 10초 유지
+    rank = max(zone_alert_rank, ppe_rank)  # 더 높은 경고 등급을 우선 표시
+    level = {0: "정상", 1: "주의", 2: "경고", 3: "위험"}[rank]
+    color = {0: "#2EDDB5", 1: "#FACC15", 2: "#FB923C", 3: "#F87171"}[rank]
+
+    alert_label.setText(f"● {level}")
+    alert_label.setStyleSheet(
+        f"color: {color}; background: #182C40; border-radius: 8px; "
+        "padding: 8px 16px; font-size: 14px;"
+    )
+alert_timer = QTimer(window)  # 일시정지 중에도 경고 종료 시간을 확인
+alert_timer.timeout.connect(update_safety_alert)
+alert_timer.start(250)  # 0.25초마다 상태 갱신
+
 def check_zone_intrusion(objects, frame):
-    global zone_previous
+    global zone_previous, zone_alert_rank
     height, width = frame.shape[:2]  # 원본 영상의 높이와 너비
     current = set()  # 현재 구역 안에 있는 사람
     highest = 0  # 현재 감지된 가장 높은 등급
@@ -410,10 +432,47 @@ def check_zone_intrusion(objects, frame):
                     event_list.takeItem(event_list.count() - 1)  # 오래된 기록부터 제거
 
     zone_previous = current  # 다음 분석에서 새 진입을 구분
-    level = {0: "정상", 1: "주의", 2: "경고", 3: "위험"}[highest]
-    color = colors.get(level, "#2EDDB5")  # 정상은 초록색
-    alert_label.setText(f"● {level}")
-    alert_label.setStyleSheet(f"color: {color}; background: #182C40; border-radius: 8px; padding: 8px 16px; font-size: 14px;")
+    zone_alert_rank = highest  # 현재 구역 침입의 최고 등급 저장
+    update_safety_alert()  # 보호구 경고와 함께 상단 표시 갱신
+
+def show_ppe_result(violations, task_id):
+    global ppe_warning_until  # 함수 밖에 있는 경고 종료 시간을 변경
+
+    if task_id != ai_task_id or cap is None:
+        return  # 이전 영상의 결과 무시
+
+    now = monotonic()  # 현재 시간
+    if violations:
+        ppe_warning_until = now + 10  # 미착용 감지 시 경고를 10초 연장
+    update_safety_alert()  # 상단 경고 표시 갱신
+
+    names = {"NO_HARDHAT": "안전모 미착용", "NO_SAFETY_VEST": "안전조끼 미착용"}
+    path = Path(__file__).resolve().parent / "data" / "ppe_events.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)  # 저장 폴더가 없으면 생성
+
+    for violation in violations:
+        track_id = violation["track_id"]  # 미착용이 감지된 사람 ID
+        missing_item = violation["missing_item"]  # 미착용 보호구 종류
+        key = (track_id, missing_item)  # 사람과 보호구를 함께 구분
+
+        if now - ppe_last_logged.get(key, -10) < 10:
+            continue  # 같은 사람의 같은 항목은 10초 안에 다시 기록하지 않음
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        text = f"{timestamp[11:]}  [경고] 사람 ID {track_id} · {names[missing_item]}"
+        item = QListWidgetItem(text)
+        item.setForeground(QColor("#FB923C"))  # 경고 기록은 주황색
+        event_list.insertItem(0, item)  # 최신 기록을 맨 위에 표시
+
+        with path.open("a", newline="", encoding="utf-8-sig") as file:
+            writer = csv.writer(file)
+            if file.tell() == 0:
+                writer.writerow(["time", "track_id", "missing_item"])  # 빈 파일에 제목 추가
+            writer.writerow([timestamp, track_id, missing_item])  # 기존 기록 뒤에 추가
+
+        ppe_last_logged[key] = now  # 마지막 기록 시간 갱신
+        if event_list.count() > 200:
+            event_list.takeItem(event_list.count() - 1)  # 화면 기록은 최대 200개
 
 def show_ai_result(frame, people, vehicles, objects, task_id, raw_frame, ai_fps):
     global last_frame, tracked_objects, last_raw_frame
@@ -439,17 +498,21 @@ def show_ai_result(frame, people, vehicles, objects, task_id, raw_frame, ai_fps)
 def show_ai_error(message):
     event_list.addItem(f"AI 오류: {message}")  # 오류를 이벤트 목록에 표시
 
-ai_worker.result_ready.connect(show_ai_result)  # 분석 결과 받기
-ai_worker.error.connect(show_ai_error)  # 오류 내용 받기
+ai_worker.result_ready.connect(show_ai_result)   # 분석 결과 받기
+ai_worker.ppe_ready.connect(show_ppe_result)     # 보호구 검사 결과를 이벤트 기록에 연결
+ai_worker.error.connect(show_ai_error)           # 오류 내용 받기
 
 def stop_video():
-    global cap, ai_task_id  # 영상 연결과 작업 번호 사용
+    global cap, ai_task_id, ppe_warning_until, zone_alert_rank  # 영상 연결과 작업 번호 사용
     ai_task_id += 1  # 이전 영상의 분석 결과 무효화
     timer.stop()
     video_slider.setEnabled(False)  # 영상 연결이 끝나면 이동 비활성화
     status_label.setText("● 대기 중")  # 정지할 때 표시
     zone_previous.clear()  # 이전 영상의 진입 상태 초기화
     zone_last_logged.clear()  # 이전 영상의 중복 기록 시간 초기화
+    ppe_last_logged.clear()  # 영상 종료 시 보호구 기록 간격 초기화
+    ppe_warning_until = 0.0  # 보호구 경고 종료
+    zone_alert_rank = 0  # 구역 경고 초기화
     alert_label.setText("● 감지 대기")
     alert_label.setStyleSheet("color: #91A7BD; background: #182C40; border-radius: 8px; padding: 8px 16px; font-size: 14px;")
 
