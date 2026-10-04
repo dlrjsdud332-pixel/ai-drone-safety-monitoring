@@ -1,10 +1,10 @@
 from threading import Condition
 from PySide6.QtCore import QThread, Signal
 from ai_tracker import AITracker
-
+from time import perf_counter  # AI 처리 시간을 정확하게 측정
 
 class AIWorker(QThread):
-    result_ready = Signal(object, int, int, object, int, object)  # 마지막에 원본 영상 추가
+    result_ready = Signal(object, int, int, object, int, object, float)  # 마지막에 AI 처리 FPS 전달
     error = Signal(str)  # 오류 내용을 화면에 전달
 
     def __init__(self, parent=None):
@@ -36,8 +36,10 @@ class AIWorker(QThread):
                     frame, task_id = self.pending  # 분석할 영상 가져오기
                     self.pending = None  # 대기 공간 비우기
 
-                annotated, people, vehicles, objects = tracker.process(frame)  # 대상 정보 받기
-                self.result_ready.emit(annotated, people, vehicles, objects, task_id, frame.copy())  # 원본도 함께 전달
+                started = perf_counter()  # 분석 시작 시각
+                annotated, people, vehicles, objects = tracker.process(frame)  # 탐지와 추적
+                ai_fps = 1.0 / max(perf_counter() - started, 0.000001)  # 초당 분석 가능한 프레임 수
+                self.result_ready.emit(annotated, people, vehicles, objects, task_id, frame.copy(), ai_fps)
 
         except Exception as exc:
             self.error.emit(str(exc))  # 분석 오류 전달

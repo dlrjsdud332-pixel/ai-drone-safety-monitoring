@@ -1,5 +1,6 @@
 import sys
 import cv2                                      # 영상 프레임 읽기
+import csv                                      # 표 형태의 이벤트 기록 저장
 from ai_worker import AIWorker  # 별도 스레드에서 AI 분석
 from PySide6.QtWidgets import QSlider           # 재생 위치 조절 막대
 from PySide6.QtCore import QPoint, QRect, Signal  # 좌표와 사각형, 선택 완료 신호
@@ -17,6 +18,8 @@ from PySide6.QtWidgets import QFrame, QVBoxLayout, QPushButton, QListWidget
 from PySide6.QtGui import QPainter, QPen, QColor  # 화면에 점·선·색을 그리는 도구
 from PySide6.QtCore import QPointF         # 소수점 좌표를 저장하는 도구
 from PySide6.QtWidgets import QComboBox    # 여러 항목 중 하나를 선택하는 메뉴
+from datetime import datetime              # 경고가 발생한 시각
+from time import monotonic                 # 중복 경고 사이의 시간 계산
 from PySide6.QtCore import Qt
 
 class VideoLabel(QLabel):
@@ -262,6 +265,9 @@ header_layout.addWidget(app_title)
 header_layout.addWidget(subtitle)
 header_layout.addStretch()                               # 상태 표시를 오른쪽으로 밀기
 header_layout.addWidget(status_label)
+alert_label = QLabel("● 감지 대기")  # 상단에 표시할 안전 상태
+alert_label.setStyleSheet("color: #91A7BD; background: #182C40; border-radius: 8px; padding: 8px 16px; font-size: 14px;")
+header_layout.addWidget(alert_label)  # 재생 상태 오른쪽에 추가
 root_layout.addWidget(header)
 
 content = QWidget()
@@ -357,13 +363,66 @@ ai_worker = AIWorker(window)       # AI 작업 스레드 준비
 ai_task_id = 0                     # 영상이 바뀌었을 때 이전 분석 결과를 구분
 tracked_objects = []               # 현재 화면에서 선택할 수 있는 대상 목록
 selected_track_id = None           # 선택한 대상 ID, 처음에는 선택 없음
+zone_previous = set()              # 이전 분석에서 구역 안에 있던 사람
+zone_last_logged = {}              # 사람·구역별 마지막 경고 기록 시간
 
-def show_ai_result(frame, people, vehicles, objects, task_id, raw_frame):
+def save_zone_event(track_id, zone_number, level):
+    path = Path(__file__).resolve().parent / "data" / "ui_zone_events.csv"  # main.py 기준 저장 위치
+    path.parent.mkdir(parents=True, exist_ok=True)  # data 폴더가 없으면 생성
+    with path.open("a", newline="", encoding="utf-8-sig") as file:  # 기존 기록 뒤에 추가
+        writer = csv.writer(file)
+        if file.tell() == 0:
+            writer.writerow(["time", "track_id", "zone_number", "level"])  # 처음에만 항목 이름 저장
+        writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), track_id, zone_number, level])
+
+def check_zone_intrusion(objects, frame):
+    global zone_previous
+    height, width = frame.shape[:2]  # 원본 영상의 높이와 너비
+    current = set()  # 현재 구역 안에 있는 사람
+    highest = 0  # 현재 감지된 가장 높은 등급
+    ranks = {"주의": 1, "경고": 2, "위험": 3}
+    colors = {"주의": "#FACC15", "경고": "#FB923C", "위험": "#F87171"}
+    now = monotonic()
+
+    for obj in objects:
+        if obj["name"] != "사람" or obj["id"] < 0:
+            continue  # 차량과 추적 번호 없는 대상은 제외
+        x1, y1, x2, y2 = obj["bbox"]
+        foot = QPointF((x1 + x2) / 2 / width, y2 / height)  # 발 위치를 구역과 같은 비율 좌표로 변환
+
+        for number, zone in enumerate(video_panel.zones, start=1):
+            polygon = QPolygonF(zone["points"])  # 저장된 점으로 다각형 생성
+            if not polygon.containsPoint(foot, Qt.FillRule.OddEvenFill):
+                continue  # 발이 구역 밖이면 다음 구역 확인
+            level = zone["level"]
+            highest = max(highest, ranks[level])  # 여러 구역 중 가장 높은 등급 선택
+            key = (id(zone), obj["id"])  # 구역과 사람을 함께 구분
+            current.add(key)
+
+            if key not in zone_previous and now - zone_last_logged.get(key, -10) >= 10:
+                text = f"{datetime.now():%H:%M:%S}  [{level}] 구역 {number} · 사람 ID {obj['id']} 진입"
+                item = QListWidgetItem(text)
+                item.setForeground(QColor(colors[level]))  # 구역 등급에 맞는 글자 색
+                event_list.insertItem(0, item)  # 최신 경고를 위에 표시
+                save_zone_event(obj["id"], number, level)  # 화면에 추가한 이벤트를 CSV에도 저장
+                zone_last_logged[key] = now  # 마지막 기록 시간 갱신
+                if event_list.count() > 200:
+                    event_list.takeItem(event_list.count() - 1)  # 오래된 기록부터 제거
+
+    zone_previous = current  # 다음 분석에서 새 진입을 구분
+    level = {0: "정상", 1: "주의", 2: "경고", 3: "위험"}[highest]
+    color = colors.get(level, "#2EDDB5")  # 정상은 초록색
+    alert_label.setText(f"● {level}")
+    alert_label.setStyleSheet(f"color: {color}; background: #182C40; border-radius: 8px; padding: 8px 16px; font-size: 14px;")
+
+def show_ai_result(frame, people, vehicles, objects, task_id, raw_frame, ai_fps):
     global last_frame, tracked_objects, last_raw_frame
     if task_id != ai_task_id or cap is None:
         return
     last_raw_frame = raw_frame                     # 같은 분석 결과의 원본 영상 보관
     tracked_objects = objects  # 현재 대상의 ID와 좌표 저장
+    check_zone_intrusion(objects, raw_frame)  # 상단 안전 상태와 오른쪽 이벤트 갱신
+    stats_label.setText(f"사람  {people}명     차량  {vehicles}대     AI 처리  {ai_fps:.1f} FPS")  # 현재 분석 결과 표시
     last_frame = frame.copy()  # 확대에 사용할 분석 화면 저장
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Qt용 색상 순서
     height, width = rgb.shape[:2]
@@ -389,6 +448,11 @@ def stop_video():
     timer.stop()
     video_slider.setEnabled(False)  # 영상 연결이 끝나면 이동 비활성화
     status_label.setText("● 대기 중")  # 정지할 때 표시
+    zone_previous.clear()  # 이전 영상의 진입 상태 초기화
+    zone_last_logged.clear()  # 이전 영상의 중복 기록 시간 초기화
+    alert_label.setText("● 감지 대기")
+    alert_label.setStyleSheet("color: #91A7BD; background: #182C40; border-radius: 8px; padding: 8px 16px; font-size: 14px;")
+
     if cap is not None:
         cap.release()
         cap = None
@@ -412,9 +476,13 @@ def update_zoom():
         height, width = last_raw_frame.shape[:2]
         x1, y1, x2, y2 = target["bbox"]
         pad = 20
-        zoom_roi = (max(0, x1 - pad), max(0, y1 - pad),
-                    min(width, x2 + pad), min(height, y2 + pad))  # 이동한 위치로 확대 영역 갱신
-
+        new_roi = (max(0, x1 - pad), max(0, y1 - pad),
+                   min(width, x2 + pad), min(height, y2 + pad))  # 현재 대상의 확대 범위
+        if zoom_roi is None:
+            zoom_roi = new_roi  # 처음에는 바로 적용
+        else:
+            alpha = 0.2  # 작을수록 부드럽지만 따라가는 반응은 느려짐
+            zoom_roi = tuple(old + (new - old) * alpha for old, new in zip(zoom_roi, new_roi))  # 위치와 크기를 서서히 변경
     if zoom_roi is None:
         return
     x1, y1, x2, y2 = zoom_roi
@@ -627,6 +695,9 @@ video_title = QLabel("관제 영상 · 선택된 영상 없음")  # 현재 영�
 video_title.setStyleSheet("color: #E8F0FA; font-size: 16px; font-weight: bold;")  # 제목 모양
 center_layout.addWidget(video_title)  # 영상 위에 제목 배치
 center_layout.addWidget(video_panel, 1)           # 영상이 남는 공간을 채움
+stats_label = QLabel("사람  0명     차량  0대     AI 처리  0.0 FPS")  # 영상 아래 관제 정보
+stats_label.setStyleSheet("background: #111F2E; color: #DCE6F2; padding: 10px 14px; border-radius: 6px; font-size: 14px;")
+center_layout.addWidget(stats_label)  # 영상과 시간 이동 막대 사이에 배치
 video_slider = QSlider(Qt.Orientation.Horizontal)  # 가로 슬라이더
 video_slider.setRange(0, 0)  # 영상을 열기 전에는 이동 범위 없음
 video_slider.setEnabled(False)  # 영상 연결 전에는 비활성화
@@ -745,6 +816,7 @@ def pause_video():
 def reset_video():
     global last_frame, zoom_roi  # 원본 프레임과 확대 영역 변경
     stop_video()  # 재생 중지와 영상 연결 해제
+    stats_label.setText("사람  0명     차량  0대     AI 처리  0.0 FPS")  # 정지 버튼을 누르면 수치 초기화
     video_slider.setRange(0, 0)  # 정지하면 슬라이더 초기화
     video_current.setText("00:00")  # 현재 시간 초기화
     video_time.setText("/ 00:00")  # 전체 시간 초기화
