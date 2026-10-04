@@ -367,6 +367,8 @@ zone_previous = set()              # 이전 분석에서 구역 안에 있던 �
 zone_last_logged = {}              # 사람·구역별 마지막 경고 기록 시간
 ppe_last_logged = {}               # 사람 ID와 미착용 항목별 마지막 기록 시간
 ppe_warning_until = 0.0            # 보호구 경고가 끝나는 시간
+fall_warning_until = 0.0           # 넘어짐 위험 표시가 끝나는 시간
+fall_last_logged = {}              # 사람 ID별 마지막 넘어짐 기록 시간
 zone_alert_rank = 0                # 구역 상태: 정상 0, 주의 1, 경고 2, 위험 3
 
 
@@ -384,7 +386,8 @@ def update_safety_alert():
         return  # 영상이 없으면 기존 대기 표시 유지
 
     ppe_rank = 2 if monotonic() < ppe_warning_until else 0  # 보호구 경고는 10초 유지
-    rank = max(zone_alert_rank, ppe_rank)  # 더 높은 경고 등급을 우선 표시
+    fall_rank = 3 if monotonic() < fall_warning_until else 0  # 넘어짐 의심은 위험 등급
+    rank = max(zone_alert_rank, ppe_rank, fall_rank)  # 가장 높은 등급 표시
     level = {0: "정상", 1: "주의", 2: "경고", 3: "위험"}[rank]
     color = {0: "#2EDDB5", 1: "#FACC15", 2: "#FB923C", 3: "#F87171"}[rank]
 
@@ -435,6 +438,41 @@ def check_zone_intrusion(objects, frame):
     zone_alert_rank = highest  # 현재 구역 침입의 최고 등급 저장
     update_safety_alert()  # 보호구 경고와 함께 상단 표시 갱신
 
+def show_fall_result(falls, task_id):
+    global fall_warning_until
+
+    if task_id != ai_task_id or cap is None:
+        return  # 이전 영상의 결과 무시
+
+    now = monotonic()
+    if falls:
+        fall_warning_until = now + 4  # 넘어짐 의심 감지 시 위험 표시 10초 유지
+    update_safety_alert()
+
+    path = Path(__file__).resolve().parent / "data" / "fall_events.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)  # 저장 폴더 준비
+
+    for track_id in falls:
+        if now - fall_last_logged.get(track_id, -10) < 10:
+            continue  # 같은 ID는 10초 안에 중복 기록하지 않음
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        item = QListWidgetItem(
+            f"{timestamp[11:]}  [위험] 사람 ID {track_id} · 넘어짐 의심"
+        )
+        item.setForeground(QColor("#F87171"))  # 위험 기록은 빨간색
+        event_list.insertItem(0, item)  # 최신 기록을 맨 위에 표시
+
+        with path.open("a", newline="", encoding="utf-8-sig") as file:
+            writer = csv.writer(file)
+            if file.tell() == 0:
+                writer.writerow(["time", "track_id"])  # 빈 파일에 제목 추가
+            writer.writerow([timestamp, track_id])  # 기존 CSV 뒤에 기록 추가
+
+        fall_last_logged[track_id] = now  # 마지막 기록 시간 갱신
+        if event_list.count() > 200:
+            event_list.takeItem(event_list.count() - 1)  # 화면 기록 최대 200개
+
 def show_ppe_result(violations, task_id):
     global ppe_warning_until  # 함수 밖에 있는 경고 종료 시간을 변경
 
@@ -443,7 +481,7 @@ def show_ppe_result(violations, task_id):
 
     now = monotonic()  # 현재 시간
     if violations:
-        ppe_warning_until = now + 10  # 미착용 감지 시 경고를 10초 연장
+        ppe_warning_until = now + 4  # 미착용 감지 시 경고를 10초 연장
     update_safety_alert()  # 상단 경고 표시 갱신
 
     names = {"NO_HARDHAT": "안전모 미착용", "NO_SAFETY_VEST": "안전조끼 미착용"}
@@ -500,10 +538,11 @@ def show_ai_error(message):
 
 ai_worker.result_ready.connect(show_ai_result)   # 분석 결과 받기
 ai_worker.ppe_ready.connect(show_ppe_result)     # 보호구 검사 결과를 이벤트 기록에 연결
+ai_worker.fall_ready.connect(show_fall_result)  # 넘어짐 결과를 UI에 연결
 ai_worker.error.connect(show_ai_error)           # 오류 내용 받기
 
 def stop_video():
-    global cap, ai_task_id, ppe_warning_until, zone_alert_rank  # 영상 연결과 작업 번호 사용
+    global cap, ai_task_id, ppe_warning_until, zone_alert_rank, fall_warning_until # 영상 연결과 작업 번호 사용
     ai_task_id += 1  # 이전 영상의 분석 결과 무효화
     timer.stop()
     video_slider.setEnabled(False)  # 영상 연결이 끝나면 이동 비활성화
@@ -512,6 +551,8 @@ def stop_video():
     zone_last_logged.clear()  # 이전 영상의 중복 기록 시간 초기화
     ppe_last_logged.clear()  # 영상 종료 시 보호구 기록 간격 초기화
     ppe_warning_until = 0.0  # 보호구 경고 종료
+    fall_warning_until = 0.0  # 넘어짐 위험 표시 초기화
+    fall_last_logged.clear()  # 넘어짐 중복 기록 시간 초기화
     zone_alert_rank = 0  # 구역 경고 초기화
     alert_label.setText("● 감지 대기")
     alert_label.setStyleSheet("color: #91A7BD; background: #182C40; border-radius: 8px; padding: 8px 16px; font-size: 14px;")
