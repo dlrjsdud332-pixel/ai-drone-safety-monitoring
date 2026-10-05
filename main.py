@@ -1,7 +1,16 @@
 import sys
 import cv2                                      # 영상 프레임 읽기
+from threading import Condition, RLock
+from functools import wraps
+import torch
+from ppe_detector import PPEDetector
+from fall_detector import FallDetector
+from time import perf_counter
+from ai_tracker import AITracker
+from PySide6.QtCore import QThread
 import csv                                      # 표 형태의 이벤트 기록 저장
 from ai_worker import AIWorker                  # 별도 스레드에서 AI 분석
+from PySide6.QtWidgets import QGridLayout
 from PySide6.QtWidgets import QSlider           # 재생 위치 조절 막대
 from PySide6.QtCore import QPoint, QRect, Signal  # 좌표와 사각형, 선택 완료 신호
 from PySide6.QtWidgets import QRubberBand  # 드래그 선택 사각형
@@ -20,10 +29,174 @@ from PySide6.QtCore import QPointF         # 소수점 좌표를 저장하는 �
 from PySide6.QtWidgets import QComboBox    # 여러 항목 중 하나를 선택하는 메뉴
 from datetime import datetime              # 경고가 발생한 시각
 from time import monotonic                 # 중복 경고 사이의 시간 계산
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QObject, QEvent
 from stream_resolver import StreamResolver # 유튜브 영상 주소 추출
 from stream_capture import StreamCapture  # 별도 작업에서 실시간 영상 읽기
 
+
+gpu_analysis_lock = RLock()  # 모든 AI 모델이 같은 맥 GPU를 순서대로 사용
+
+def serialize_gpu_call(method):
+    @wraps(method)
+    def guarded(*args, **kwargs):
+        with gpu_analysis_lock:
+            try:
+                return method(*args, **kwargs)
+            finally:
+                if torch.backends.mps.is_available():
+                    torch.mps.synchronize()  # GPU 작업 완료 후 다음 분석에 차례 넘기기
+    return guarded
+
+# 첫 화면의 감지·보호구·넘어짐과 두 번째 화면의 감지를 같은 잠금으로 보호
+for detector, methods in ((AITracker, ("__init__", "process")),
+                          (PPEDetector, ("__init__", "detect")),
+                          (FallDetector, ("__init__", "detect"))):
+    for name in methods:
+        setattr(detector, name, serialize_gpu_call(getattr(detector, name)))
+
+class StatsCards(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(62)  # 정보 카드를 작게 고정해 영상 공간 확보
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        self.values = []
+        for title, unit in (("사람", "명"), ("차량", "대"), ("FPS", "fps")):
+            card = QFrame()
+            card.setObjectName("statCard")
+            card.setStyleSheet("QFrame#statCard {background:#111F2E; border:1px solid #263B50; border-radius:8px;}")
+            column = QVBoxLayout(card)
+            column.setContentsMargins(8, 5, 8, 5)
+            column.setSpacing(2)
+            name = QLabel(title)
+            name.setStyleSheet("color:#91A7BD; font-size:11px; font-weight:normal;")
+            value = QLabel("00" if unit != "fps" else "0.0")
+            value.setStyleSheet("color:#E8F0FA; font-size:18px; font-weight:bold;")
+            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            value.setToolTip("AI 처리 속도" if unit == "fps" else title + " 감지 수")
+            column.addWidget(name)
+            column.addWidget(value)
+            row.addWidget(card, 1)
+            self.values.append((value, unit))
+        self.set_values(0, 0, 0.0)
+
+    def set_values(self, people, vehicles, fps):
+        for (label, unit), value in zip(self.values, (people, vehicles, fps)):
+            number = f"{value:.1f}" if unit == "fps" else f"{int(value):02d}"
+            label.setText(number + f' <span style="font-size:11px; color:#91A7BD;">{unit}</span>')
+            label.setToolTip(f"AI 처리 {value:.1f} FPS" if unit == "fps" else f"{int(value)}{unit}")
+
+
+class SecondAIWorker(QThread):
+    result_ready = Signal(int, int, float, int, object, object)  # 사람 수, 차량 수, 분석 FPS, 작업 번호
+    error = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.condition = Condition()
+        self.pending = None
+        self.stopping = False
+
+    def submit(self, frame, task_id):
+        with self.condition:
+            if not self.stopping:
+                self.pending = (frame.copy(), task_id)  # 오래된 프레임 대신 최신 한 장만 보관
+                self.condition.notify()
+
+    def stop(self):
+        with self.condition:
+            self.stopping = True
+            self.pending = None
+            self.condition.notify()
+
+    def run(self):
+        tracker = None
+        previous_task = None
+        while True:
+            with self.condition:
+                while self.pending is None and not self.stopping:
+                    self.condition.wait()
+                if self.stopping:
+                    return
+                frame, task_id = self.pending
+                self.pending = None
+            try:
+                if previous_task != task_id:
+                    tracker = AITracker()  # 영상별 추적 정보 분리, 첫 번째 화면의 모델과 독립
+                    previous_task = task_id
+                started = perf_counter()
+                _, people, vehicles, objects = tracker.process(frame)
+                fps = 1.0 / max(perf_counter() - started, 0.000001)
+                self.result_ready.emit(people, vehicles, fps, task_id, objects, frame)
+            except Exception as exc:
+                self.error.emit(f"영상 AI 오류: {exc}")
+                tracker, previous_task = None, None
+                with self.condition:
+                    self.stopping = True  # 같은 오류를 매 프레임 반복하지 않음
+                    self.pending = None
+                return
+
+
+def fitted_zoom_rect(roi, frame_width, frame_height, view_width, view_height):
+    x1, y1, x2, y2 = roi
+    x1, x2 = sorted((max(0, min(frame_width, x1)), max(0, min(frame_width, x2))))
+    y1, y2 = sorted((max(0, min(frame_height, y1)), max(0, min(frame_height, y2))))
+    width, height = x2-x1, y2-y1
+    if width <= 0 or height <= 0 or view_width <= 0 or view_height <= 0:
+        return None
+    ratio = view_width/view_height  # 확대칸과 같은 비율로 주변 영상까지 포함
+    crop_width, crop_height = max(width, height*ratio), max(height, width/ratio)
+    if crop_width > frame_width or crop_height > frame_height:
+        return (int(x1), int(y1), min(frame_width, int(x2+0.999)), min(frame_height, int(y2+0.999)))  # 원본 밖은 여백으로 표시
+    left = max(0, min(frame_width-crop_width, (x1+x2-crop_width)/2))
+    top = max(0, min(frame_height-crop_height, (y1+y2-crop_height)/2))
+    return (int(left), int(top), min(frame_width, int(left+crop_width+0.999)), min(frame_height, int(top+crop_height+0.999)))
+
+class ZoomView(QLabel):
+    def __init__(self, text):
+        super().__init__(text)
+        self.source_frame = None
+        self.source_roi = None
+
+    def show_frame(self, frame, roi):
+        self.source_frame = frame.copy()  # 원본을 보관해 창 크기가 바뀌어도 다시 맞춤
+        self.source_roi = tuple(roi)
+        self.update()
+
+    def clear(self):
+        self.source_frame = None
+        self.source_roi = None
+        super().clear()
+
+    def setText(self, text):
+        self.source_frame = None
+        self.source_roi = None
+        super().setText(text)
+
+    def paintEvent(self, event):
+        if self.source_frame is None:
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#0B1420"))
+        area = self.contentsRect()
+        painter.setClipRect(area)  # 이벤트 목록과 겹치지 않게 확대칸 안에서만 그림
+        height, width = self.source_frame.shape[:2]
+        bounds = fitted_zoom_rect(self.source_roi, width, height, area.width(), area.height())
+        if bounds is None:
+            return
+        x1, y1, x2, y2 = bounds
+        crop = self.source_frame[y1:y2, x1:x2]
+        if not crop.size:
+            return
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        h, w = rgb.shape[:2]
+        image = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
+        pixmap = QPixmap.fromImage(image).scaled(area.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        left = area.x()+(area.width()-pixmap.width())//2
+        top = area.y()+(area.height()-pixmap.height())//2
+        painter.drawPixmap(left, top, pixmap)  # 대상 전체와 주변 영상을 비율에 맞춰 표시
 
 class VideoLabel(QLabel):
     region_selected = Signal(QRect)  # 기존 줄
@@ -251,7 +424,7 @@ header_layout.setContentsMargins(18, 12, 18, 12)
 app_title = QLabel("드론 안전 관제")
 app_title.setStyleSheet("color: #E8F0FA; font-size: 26px; font-weight: bold;")
 
-subtitle = QLabel("AI SAFETY MONITOR")
+subtitle = QLabel("AI SAFETY MONITOR · 4분할 v11")
 subtitle.setStyleSheet("color: #91A7BD; font-size: 12px; font-weight: normal;")
 
 status_label = QLabel("● 대기 중")
@@ -379,7 +552,7 @@ right_layout.setContentsMargins(12, 16, 12, 12)
 right_layout.setSpacing(12)
 
 zoom_title = QLabel("확대 화면")  # 확대 영역 제목
-zoom_panel = QLabel("확대할 영역을 선택해 주세요")  # 확대 영상을 표시할 자리
+zoom_panel = ZoomView("확대할 영역을 선택해 주세요")  # 확대 영상을 표시할 자리
 zoom_panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
 zoom_panel.setMinimumSize(1, 1)
 zoom_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -394,7 +567,7 @@ zoom_name.hide()  # 대상 선택 전에는 숨김
 event_list = QListWidget()  # 감지된 경고를 표시할 목록
 
 right_layout.addWidget(zoom_title)
-right_layout.addWidget(zoom_panel, 1)  # 위쪽 확대 화면
+right_layout.addWidget(zoom_panel, 1)  # 확대창과 이벤트 목록을 일정한 비중으로 배치
 right_layout.addWidget(event_title)
 right_layout.addWidget(event_list, 1)  # 아래쪽 이벤트 목록
 
@@ -457,7 +630,7 @@ alert_timer = QTimer(window)  # 일시정지 중에도 경고 종료 시간을 �
 alert_timer.timeout.connect(update_safety_alert)
 alert_timer.start(250)  # 0.25초마다 상태 갱신
 
-def check_zone_intrusion(objects, frame):
+def check_zone_intrusion(objects, frame, source=0):
     global zone_previous, zone_alert_rank
     height, width = frame.shape[:2]  # 원본 영상의 높이와 너비
     current = set()  # 현재 구역 안에 있는 사람
@@ -466,23 +639,25 @@ def check_zone_intrusion(objects, frame):
     colors = {"주의": "#FACC15", "경고": "#FB923C", "위험": "#F87171"}
     now = monotonic()
 
+    panel = video_panels[source]
+    previous = zone_states[source]
     for obj in objects:
         if obj["name"] != "사람" or obj["id"] < 0:
             continue  # 차량과 추적 번호 없는 대상은 제외
         x1, y1, x2, y2 = obj["bbox"]
         foot = QPointF((x1 + x2) / 2 / width, y2 / height)  # 발 위치를 구역과 같은 비율 좌표로 변환
 
-        for number, zone in enumerate(video_panel.zones, start=1):
+        for number, zone in enumerate(panel.zones, start=1):
             polygon = QPolygonF(zone["points"])  # 저장된 점으로 다각형 생성
             if not polygon.containsPoint(foot, Qt.FillRule.OddEvenFill):
                 continue  # 발이 구역 밖이면 다음 구역 확인
             level = zone["level"]
             highest = max(highest, ranks[level])  # 여러 구역 중 가장 높은 등급 선택
-            key = (id(zone), obj["id"])  # 구역과 사람을 함께 구분
+            key = (source, id(zone), obj["id"])  # 구역과 사람을 함께 구분
             current.add(key)
 
-            if key not in zone_previous and now - zone_last_logged.get(key, -10) >= 10:
-                text = f"{datetime.now():%H:%M:%S}  [{level}] 구역 {number} · 사람 ID {obj['id']} 진입"
+            if key not in previous and now - zone_last_logged.get(key, -10) >= 10:
+                text = f"{datetime.now():%H:%M:%S}  [{level}] {source+1}번 구역 {number} · 사람 ID {obj['id']} 진입"
                 item = QListWidgetItem(text)
                 item.setForeground(QColor(colors[level]))  # 구역 등급에 맞는 글자 색
                 event_list.insertItem(0, item)  # 최신 경고를 위에 표시
@@ -491,8 +666,10 @@ def check_zone_intrusion(objects, frame):
                 if event_list.count() > 200:
                     event_list.takeItem(event_list.count() - 1)  # 오래된 기록부터 제거
 
-    zone_previous = current  # 다음 분석에서 새 진입을 구분
-    zone_alert_rank = highest  # 현재 구역 침입의 최고 등급 저장
+    zone_states[source] = current
+    zone_ranks[source] = highest
+    zone_previous = current
+    zone_alert_rank = max(zone_ranks)  # 현재 구역 침입의 최고 등급 저장
     update_safety_alert()  # 보호구 경고와 함께 상단 표시 갱신
 
 def show_fall_result(falls, task_id):
@@ -576,7 +753,7 @@ def show_ai_result(frame, people, vehicles, objects, task_id, raw_frame, ai_fps)
     last_raw_frame = raw_frame                     # 같은 분석 결과의 원본 영상 보관
     tracked_objects = objects  # 현재 대상의 ID와 좌표 저장
     check_zone_intrusion(objects, raw_frame)  # 상단 안전 상태와 오른쪽 이벤트 갱신
-    stats_label.setText(f"사람  {people}명     차량  {vehicles}대     AI 처리  {ai_fps:.1f} FPS")  # 현재 분석 결과 표시
+    set_pane_stats(0, people, vehicles, ai_fps)  # 현재 분석 결과 표시
     last_frame = frame.copy()  # 확대에 사용할 분석 화면 저장
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Qt용 색상 순서
     height, width = rgb.shape[:2]
@@ -610,17 +787,19 @@ def stop_video():
     stream_button.setText("연결하기")
     video_current.setEnabled(True)  # 일반 영상의 시간 입력 다시 허용
 
-    video_slider.setEnabled(False)  # 이 줄부터 기존 코드는 그대로 유지
-
-    video_slider.setEnabled(False)  # 영상 연결이 끝나면 이동 비활성화
-    status_label.setText("● 대기 중")  # 정지할 때 표시
-    zone_previous.clear()  # 이전 영상의 진입 상태 초기화
-    zone_last_logged.clear()  # 이전 영상의 중복 기록 시간 초기화
+    if selected_pane == 0:
+        video_slider.setEnabled(False)  # 첫 영상 종료가 두 번째 시간 막대에 영향을 주지 않음
+        status_label.setText("● 대기 중")
+    for key in list(zone_last_logged):
+        if key[0] == 0:
+            zone_last_logged.pop(key)  # 첫 영상의 기록 간격만 초기화
     ppe_last_logged.clear()  # 영상 종료 시 보호구 기록 간격 초기화
     ppe_warning_until = 0.0  # 보호구 경고 종료
     fall_warning_until = 0.0  # 넘어짐 위험 표시 초기화
     fall_last_logged.clear()  # 넘어짐 중복 기록 시간 초기화
-    zone_alert_rank = 0  # 구역 경고 초기화
+    zone_states[0].clear()
+    zone_ranks[0] = 0
+    zone_alert_rank = max(zone_ranks)  # 두 번째 화면의 구역 경고 유지
     alert_label.setText("● 감지 대기")
     alert_label.setStyleSheet("color: #91A7BD; background: #182C40; border-radius: 8px; padding: 8px 16px; font-size: 14px;")
 
@@ -629,6 +808,9 @@ def stop_video():
         cap = None
 def update_zoom():
     global zoom_roi
+    if selected_pane > 0:
+        extra_panes[selected_pane-1].update_zoom()
+        return
     if last_raw_frame is None:
         return
 
@@ -656,44 +838,12 @@ def update_zoom():
             zoom_roi = tuple(old + (new - old) * alpha for old, new in zip(zoom_roi, new_roi))  # 위치와 크기를 서서히 변경
     if zoom_roi is None:
         return
-    x1, y1, x2, y2 = zoom_roi
+    display_roi = zoom_roi
     if selected_track_id is not None:
-        panel = zoom_panel.contentsRect()
-        ratio = panel.width() / max(1, panel.height())   # 확대 창의 가로·세로 비율
-        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2           # 대상 중심 위치
-        crop_h = max(y2 - y1, (x2 - x1) / ratio)         # 대상 전체가 들어가는 높이
-        crop_w = crop_h * ratio                         # 창과 같은 비율로 너비 계산
-
-        left = int(cx - crop_w / 2)
-        top = int(cy - crop_h / 2)
-        right = left + max(1, int(crop_w + 0.5))
-        bottom = top + max(1, int(crop_h + 0.5))
-        frame_h, frame_w = last_raw_frame.shape[:2]
-
-        crop = last_raw_frame[max(0, top):min(frame_h, bottom), max(0, left):min(frame_w, right)]
-        if crop.size == 0:
-            return
-        crop = cv2.copyMakeBorder(
-            crop,
-            max(0, -top), max(0, bottom - frame_h),
-            max(0, -left), max(0, right - frame_w),
-            cv2.BORDER_CONSTANT, value=(0, 0, 0)         # 영상 밖으로 나간 부분은 검정 여백
-        )
-    else:
-        crop = last_raw_frame[y1:y2, x1:x2]  
-    if crop.size == 0:
-        return  # 잘라낸 영상이 비어 있으면 종료
-    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)  # Qt 화면에 맞게 색상 순서 변경
-    height, width = rgb.shape[:2]  # 잘라낸 영상의 세로와 가로
-    image = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888).copy()  # Qt 이미지 생성
-    pixmap = QPixmap.fromImage(image)  # 잘라낸 영상을 화면용 이미지로 변환
-    size = zoom_panel.contentsRect().size()           # 확대 화면 크기
-
-    scaled = pixmap.scaled(size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                           Qt.TransformationMode.SmoothTransformation)  # 비율을 유지하면서 확대 칸을 채움
-    left = max(0, (scaled.width() - size.width()) // 2)  # 넘치는 가로 부분의 절반
-    top = max(0, (scaled.height() - size.height()) // 2)  # 넘치는 세로 부분의 절반
-    zoom_panel.setPixmap(scaled.copy(left, top, size.width(), size.height()))  # 중앙 부분을 창 크기로 표시
+        nx1, ny1, nx2, ny2 = new_roi
+        rx1, ry1, rx2, ry2 = zoom_roi
+        display_roi = (min(rx1,nx1), min(ry1,ny1), max(rx2,nx2), max(ry2,ny2))  # 이동 중에도 현재 대상 전체 포함
+    render_zoom(last_raw_frame, display_roi)
 
 def select_zoom(rect):  # 화면에서 선택한 영역을 원본 영상 좌표로 변환
     global zoom_roi, selected_track_id
@@ -769,12 +919,14 @@ def update_frame():  # 최신 영상 한 장을 AI에 전달
         return
     ok, frame = cap.read()  # ok: 읽기 성공 여부, frame: 영상 한 장
     if not ok:  # 영상이 끝났거나 읽지 못하면 중지
-        stop_video()
+        timer.stop()  # 끝난 뒤에도 시간 막대로 장면 이동 가능
+        if selected_pane == 0:
+            status_label.setText("● 1번 영상 끝 · 시간 이동 가능")
         return
     
     ai_worker.submit(frame, ai_task_id)  # 현재 영상을 AI에 전달
 
-    if not video_slider.isSliderDown():  # 손잡이를 잡고 있지 않을 때
+    if selected_pane == 0 and not video_slider.isSliderDown():  # 선택한 화면의 시간만 표시
         position = max(0, int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1)  # 현재 프레임
         video_slider.setValue(position)  # 슬라이더 위치 갱신
         fps = cap.get(cv2.CAP_PROP_FPS)  # 영상의 초당 프레임 수
@@ -785,6 +937,7 @@ def update_frame():  # 최신 영상 한 장을 AI에 전달
                 video_current.setText(f"{current // 60:02d}:{current % 60:02d}")
             video_time.setText(f"/ {total // 60:02d}:{total % 60:02d}")  # 전체 시간
 def play_video(item):
+    select_pane(0)  # 목록의 영상은 첫 번째 관제 화면에서 재생
     global cap, last_frame, zoom_roi  # 영상과 확대 영역 변수 사용
     stop_video()  # 이전 영상 연결 해제
     last_frame = None  # 이전 원본 프레임 초기화
@@ -811,7 +964,7 @@ def play_video(item):
         status_label.setText("● 재생 중")  # 새 영상을 시작할 때 표시
 
 timer.timeout.connect(update_frame)               # 타이머가 울리면 다음 프레임 표시
-video_list.itemDoubleClicked.connect(play_video)  # 목록 더블클릭과 재생 연결
+video_list.itemClicked.connect(lambda item: open_library_video(item))  # 한 번 클릭하면 선택한 화면에 영상 열기
 def shutdown():
     stop_video()  # 현재 영상과 실시간 작업 정지 요청
     for job in list(stream_capture_jobs):
@@ -820,9 +973,13 @@ def shutdown():
         job.wait()  # 주소 추출 작업 종료 기다리기
     for job in list(stream_capture_jobs):
         job.wait()  # 영상 연결이 해제될 때까지 기다리기
+    for pane in extra_panes:
+        pane.stop()
+        pane.worker.stop()
+    for pane in extra_panes:
+        pane.worker.wait()  # 모든 영상 분석 종료까지 기다림
     ai_worker.stop()  # AI 종료 요청
     ai_worker.wait()  # AI 작업 종료 기다리기
-app.aboutToQuit.connect(shutdown)  # 기존 연결 줄 유지
 app.aboutToQuit.connect(shutdown)  # 프로그램 종료 시 안전하게 정리
 layout.addWidget(left_panel, 2)                   # 왼쪽 너비 비중
 center_panel = QWidget()                          # 가운데 영상과 버튼을 담을 공간
@@ -860,15 +1017,19 @@ def toggle_select(enabled):
     if enabled:
         zoom_button.setChecked(False)  # 영역 확대 끄기
         zone_button.setChecked(False)  # 구역 추가 끄기
-    video_panel.set_select_mode(enabled)  # 대상 선택 모드 전환
+    for index, panel in enumerate(video_panels):
+        panel.set_select_mode(enabled and selected_pane == index)
 
 def toggle_zone(enabled):
     if enabled:
         select_button.setChecked(False)  # 대상 선택 끄기
         zoom_button.setChecked(False)  # 영역 확대 끄기
-    video_panel.set_zone_mode(enabled)
+    for index, panel in enumerate(video_panels):
+        panel.set_zone_mode(enabled and selected_pane == index)
 
 def toggle_zoom(enabled):
+    for index, panel in enumerate(video_panels):
+        panel.set_zoom_mode(enabled and selected_pane == index)
     if enabled:
         select_button.setChecked(False)  # 대상 선택 끄기
         zone_button.setChecked(False)  # 구역 추가 끄기
@@ -879,10 +1040,363 @@ zoom_button.toggled.connect(toggle_zoom)
 video_title = QLabel("관제 영상 · 선택된 영상 없음")  # 현재 영상 이름 표시
 video_title.setStyleSheet("color: #E8F0FA; font-size: 16px; font-weight: bold;")  # 제목 모양
 center_layout.addWidget(video_title)  # 영상 위에 제목 배치
-center_layout.addWidget(video_panel, 1)           # 영상이 남는 공간을 채움
-stats_label = QLabel("사람  0명     차량  0대     AI 처리  0.0 FPS")  # 영상 아래 관제 정보
-stats_label.setStyleSheet("background: #111F2E; color: #DCE6F2; padding: 10px 14px; border-radius: 6px; font-size: 14px;")
-center_layout.addWidget(stats_label)  # 영상과 시간 이동 막대 사이에 배치
+
+split_menu = QComboBox()  # 화면 배치 선택 메뉴
+split_menu.addItems(["1화면", "2분할", "4분할"])
+center_layout.addWidget(split_menu)  # 영상 위에 메뉴 배치
+
+video_container = QWidget()  # 영상 두 칸을 담는 공간
+video_layout = QGridLayout(video_container)  # 4분할은 2행 2열 배치
+video_layout.setContentsMargins(0, 0, 0, 0)
+video_layout.setSpacing(8)
+video_panels = [video_panel]
+for index in range(1, 4):
+    panel = VideoLabel(f"{index+1}번 영상\n\n클릭한 뒤 영상 라이브러리에서 선택해 주세요")
+    panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    panel.setMinimumSize(1, 1)
+    panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+    panel.setStyleSheet(video_panel.styleSheet())
+    panel.set_zone_level(zone_level.currentText())
+    zone_level.currentTextChanged.connect(panel.set_zone_level)
+    video_panels.append(panel)
+
+stats_label = StatsCards()  # 네 화면이 함께 사용하는 정보 카드
+pane_stats = [(0, 0, 0.0) for _ in range(4)]
+zone_states = [set() for _ in range(4)]
+zone_ranks = [0 for _ in range(4)]
+selected_pane = 0
+focused_pane = False
+
+def render_frame(panel, frame):
+    if frame is None:
+        return
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    height, width = rgb.shape[:2]
+    image = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888).copy()
+    panel.setPixmap(QPixmap.fromImage(image).scaled(panel.contentsRect().size(),
+        Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+def render_zoom(frame, roi):
+    if frame is not None and frame.size:
+        zoom_panel.show_frame(frame, roi)  # 원본과 선택 범위를 함께 전달
+
+def set_pane_stats(index, people, vehicles, fps):
+    pane_stats[index] = (people, vehicles, fps)
+    if selected_pane == index:
+        stats_label.set_values(people, vehicles, fps)
+
+class VideoPane(QObject):
+    def __init__(self, index):
+        super().__init__(window)
+        self.index, self.panel = index, video_panels[index]
+        self.cap, self.frame, self.roi = None, None, None
+        self.objects, self.selected_id = [], None
+        self.path, self.task_id = "", 0
+        self.last_submit, self.at_end = 0.0, False
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_video)
+        self.worker = SecondAIWorker(self)
+        self.worker.result_ready.connect(self.show_result)
+        self.worker.error.connect(self.show_error)
+        self.panel.region_selected.connect(self.select_zoom)
+        self.panel.target_clicked.connect(self.select_target)
+
+    def show_error(self, message):
+        event_list.insertItem(0, f"{self.index+1}번: {message}")
+
+    def stop(self):
+        global zone_alert_rank
+        self.timer.stop()
+        self.task_id += 1  # 정지 전 분석 결과 무시
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        self.at_end = False
+        zone_states[self.index].clear()
+        zone_ranks[self.index] = 0
+        zone_alert_rank = max(zone_ranks)
+        update_safety_alert()
+        if selected_pane == self.index:
+            sync_selected_time()
+
+    def load(self, path):
+        new_cap = cv2.VideoCapture(path)
+        if not new_cap.isOpened():
+            new_cap.release()
+            self.show_error("영상 파일을 열 수 없습니다.")
+            return
+        self.stop()
+        self.cap, self.path = new_cap, path
+        self.frame, self.roi, self.selected_id = None, None, None
+        self.objects = []
+        if selected_pane == self.index:
+            video_title.setText(f"관제 영상 · {self.index+1}번 · {Path(path).name}")
+        self.panel.zones.clear()
+        self.panel.zone_points.clear()
+        self.panel.selected_zone = None
+        self.panel.moving_point = None
+        self.last_submit = 0.0
+        set_pane_stats(self.index, 0, 0, 0.0)
+        fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.timer.setInterval(max(1, round(1000/(fps if 1 <= fps <= 120 else 30))))
+        self.update_video()
+        self.resume()
+
+    def resume(self):
+        if self.cap is None:
+            if not self.path:
+                open_selected_video()
+                return
+            self.load(self.path)
+            return
+        if self.at_end:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            self.at_end = False
+        self.timer.start()
+        if selected_pane == self.index:
+            status_label.setText(f"● {self.index+1}번 재생 중")
+            sync_selected_time()
+
+    def update_video(self):
+        if self.cap is None:
+            return
+        ok, frame = self.cap.read()
+        if not ok:
+            self.timer.stop()
+            self.at_end = True  # 영상 끝에서도 시간 이동 가능
+            if selected_pane == self.index:
+                status_label.setText(f"● {self.index+1}번 영상 끝 · 시간 이동 가능")
+                sync_selected_time()
+            return
+        self.frame = frame
+        now = monotonic()
+        if now-self.last_submit >= 0.3:
+            self.worker.submit(frame, self.task_id)
+            self.last_submit = now
+        self.render_current()
+        if selected_pane == self.index:
+            sync_selected_time()
+            self.update_zoom()
+
+    def show_result(self, people, vehicles, fps, task_id, objects, frame):
+        if task_id != self.task_id or self.cap is None:
+            return
+        self.objects = objects
+        self.render_current()
+        set_pane_stats(self.index, people, vehicles, fps)
+        check_zone_intrusion(objects, frame, self.index)
+        if selected_pane == self.index:
+            self.update_zoom()
+
+    def render_current(self):
+        if self.frame is None:
+            return
+        display = self.frame.copy()  # 확대용 원본에는 박스를 그리지 않음
+        names = {"사람": "PERSON", "자동차": "CAR", "오토바이": "BIKE", "버스": "BUS", "트럭": "TRUCK"}
+        for obj in self.objects:
+            x1, y1, x2, y2 = map(int, obj["bbox"])
+            color = (80, 220, 120) if obj["name"] == "사람" else (240, 180, 80)
+            cv2.rectangle(display, (x1, y1), (x2, y2), color, 1)
+            cv2.putText(display, f"{names.get(obj['name'], 'OBJECT')} {obj['id']}",
+                        (x1, max(14, y1-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+        render_frame(self.panel, display)
+
+    def select_target(self, point):
+        area = self.panel.image_rect()
+        if area is None or self.frame is None:
+            return
+        h, w = self.frame.shape[:2]
+        x, y = (point.x()-area.x())*w/area.width(), (point.y()-area.y())*h/area.height()
+        matches = [obj for obj in self.objects if obj["bbox"][0] <= x <= obj["bbox"][2]
+                   and obj["bbox"][1] <= y <= obj["bbox"][3]]
+        if matches:
+            target = min(matches, key=lambda obj: (obj["bbox"][2]-obj["bbox"][0])*(obj["bbox"][3]-obj["bbox"][1]))
+            self.selected_id = target["id"]
+            self.update_zoom()
+
+    def select_zoom(self, rect):
+        area = self.panel.image_rect()
+        if area is None:
+            return
+        rect = rect.intersected(area)
+        if rect.width() < 10 or rect.height() < 10:
+            return
+        self.selected_id = None
+        self.roi = ((rect.left()-area.left())/area.width(), (rect.top()-area.top())/area.height(),
+                    (rect.x()+rect.width()-area.left())/area.width(), (rect.y()+rect.height()-area.top())/area.height())
+        zoom_name.hide()
+        self.update_zoom()
+
+    def update_zoom(self):
+        if self.frame is None:
+            return
+        zoom_title.setText(f"확대 화면 · {self.index+1}번 영상")
+        if self.selected_id is not None:
+            target = next((obj for obj in self.objects if obj["id"] == self.selected_id), None)
+            if target is not None:
+                h, w = self.frame.shape[:2]
+                x1, y1, x2, y2 = target["bbox"]
+                desired = (max(0,x1-20)/w, max(0,y1-20)/h, min(w,x2+20)/w, min(h,y2+20)/h)
+                self.roi = desired if self.roi is None else tuple(a*0.75+b*0.25 for a,b in zip(self.roi, desired))
+                zoom_name.setText(f"{target['name']} · ID {target['id']}")
+                zoom_name.adjustSize()
+                zoom_name.show()
+                zoom_name.raise_()
+        if self.roi is not None:
+            h, w = self.frame.shape[:2]
+            x1, y1, x2, y2 = self.roi
+            display_roi = (x1*w, y1*h, x2*w, y2*h)
+            if self.selected_id is not None and target is not None:
+                dx1, dy1, dx2, dy2 = desired
+                display_roi = (min(x1,dx1)*w, min(y1,dy1)*h, max(x2,dx2)*w, max(y2,dy2)*h)
+            render_zoom(self.frame, display_roi)
+
+extra_panes = [VideoPane(index) for index in range(1, 4)]
+
+def pane_timer(index):
+    return timer if index == 0 else extra_panes[index-1].timer
+
+def selected_capture():
+    return cap if selected_pane == 0 else extra_panes[selected_pane-1].cap
+
+def sync_selected_time():
+    active_cap = selected_capture()
+    total_frames = int(active_cap.get(cv2.CAP_PROP_FRAME_COUNT)) if active_cap is not None else 0
+    video_slider.setEnabled(total_frames > 1)
+    video_current.setEnabled(total_frames > 1)
+    if video_slider.isSliderDown():
+        return
+    video_slider.setRange(0, max(0, total_frames-1))
+    position = max(0, int(active_cap.get(cv2.CAP_PROP_POS_FRAMES))-1) if active_cap is not None else 0
+    video_slider.setValue(position)
+    fps = active_cap.get(cv2.CAP_PROP_FPS) if active_cap is not None else 0
+    current, total = (int(position/fps), int(total_frames/fps)) if fps > 0 else (0, 0)
+    if not video_current.hasFocus():
+        video_current.setText(f"{current//60:02d}:{current%60:02d}")
+    video_time.setText(f"/ {total//60:02d}:{total%60:02d}")
+
+def refresh_panes():
+    render_frame(video_panel, last_frame)
+    for pane in extra_panes:
+        pane.render_current()
+    update_zoom()
+
+def apply_view():
+    while video_layout.count():
+        video_layout.takeAt(0)  # 배치만 해제하고 영상과 구역은 유지
+    visible = [selected_pane] if focused_pane else list(range((1, 2, 4)[split_menu.currentIndex()]))
+    for index, panel in enumerate(video_panels):
+        panel.setVisible(index in visible)
+    for position, index in enumerate(visible):
+        row, column = divmod(position, 2) if len(visible) == 4 else (0, position)
+        video_layout.addWidget(video_panels[index], row, column)
+    video_layout.setRowStretch(0, 1)
+    video_layout.setRowStretch(1, 1 if len(visible) == 4 else 0)
+    video_layout.setColumnStretch(0, 1)
+    video_layout.setColumnStretch(1, 1 if len(visible) > 1 else 0)
+    view_hint.setText(f"선택: {selected_pane+1}번 화면 · " +
+        ("Esc로 분할 복귀" if focused_pane else "클릭: 조작 화면 선택 · 더블클릭: 크게 보기"))
+    return_button.setVisible(focused_pane)
+    QTimer.singleShot(0, refresh_panes)
+
+def select_pane(index):
+    global selected_pane
+    if selected_pane != index:
+        select_button.setChecked(False)
+        zone_button.setChecked(False)
+        zoom_button.setChecked(False)
+        zoom_panel.clear()
+        zoom_name.hide()
+    selected_pane = index
+    if index > 0:
+        path = extra_panes[index-1].path
+        video_title.setText(f"관제 영상 · {index+1}번 · " + (Path(path).name if path else "선택된 영상 없음"))
+    else:
+        video_title.setText("관제 영상 · 1번 화면")
+    for i, panel in enumerate(video_panels):
+        panel.setStyleSheet("background:#111F2E; color:#DCE6F2; font-size:18px; border-radius:10px; border:2px solid " +
+                           ("#2EDDB5;" if i == index else "#263B50;"))
+    stats_label.set_values(*pane_stats[index])
+    sync_selected_time()
+    status_label.setText(f"● {index+1}번 " + ("재생 중" if pane_timer(index).isActive() else "대기 / 일시정지"))
+    apply_view()
+
+def change_split(index):
+    global focused_pane
+    focused_pane = False
+    if selected_pane >= (1, 2, 4)[index]:
+        select_pane(0)
+    else:
+        apply_view()
+
+def return_to_split():
+    global focused_pane
+    focused_pane = False
+    apply_view()
+
+view_hint = QLabel("선택: 1번 화면")
+view_hint.setStyleSheet("color:#91A7BD; font-size:12px;")
+return_button = QPushButton("분할 화면으로 복귀 · Esc")
+return_button.clicked.connect(return_to_split)
+return_button.hide()
+center_layout.addWidget(view_hint)
+center_layout.addWidget(return_button)
+center_layout.addWidget(video_container, 1)
+center_layout.addWidget(stats_label)
+split_menu.currentIndexChanged.connect(change_split)
+
+def open_selected_video():
+    path, _ = QFileDialog.getOpenFileName(window, f"{selected_pane+1}번 영상 선택", "", "영상 파일 (*.mp4 *.mov *.avi *.mkv *.webm)")
+    if not path:
+        return
+    if selected_pane > 0:
+        extra_panes[selected_pane-1].load(path)
+    else:
+        item = QListWidgetItem(Path(path).name)
+        item.setData(Qt.ItemDataRole.UserRole, path)
+        play_video(item)
+
+open_button = QPushButton("＋ 선택한 화면에 영상 열기")
+open_button.setStyleSheet(zoom_button.styleSheet())
+open_button.clicked.connect(open_selected_video)
+center_layout.addWidget(open_button)
+
+def open_library_video(item):
+    if selected_pane > 0:
+        if item.data(Qt.ItemDataRole.UserRole+1):
+            event_list.addItem("실시간 연결은 현재 1번 화면에서 지원합니다.")
+            return
+        extra_panes[selected_pane-1].load(item.data(Qt.ItemDataRole.UserRole))
+    else:
+        play_video(item)
+
+class PaneEvents(QObject):
+    def eventFilter(self, obj, event):
+        global focused_pane
+        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            if video_current.hasFocus() or any(panel.zone_enabled and panel.zone_points for panel in video_panels):
+                return False
+            if focused_pane:
+                return_to_split()
+                return True
+        if obj in video_panels:
+            index = video_panels.index(obj)
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                select_pane(index)
+                obj.setFocus()
+            elif event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
+                if not (obj.zoom_enabled or obj.select_enabled or obj.zone_enabled):
+                    select_pane(index)
+                    focused_pane = True
+                    apply_view()
+                    return True
+            elif event.type() == QEvent.Type.Resize:
+                QTimer.singleShot(0, refresh_panes)
+        return False
+
+pane_events = PaneEvents(window)
+app.installEventFilter(pane_events)
+
 video_slider = QSlider(Qt.Orientation.Horizontal)  # 가로 슬라이더
 video_slider.setRange(0, 0)  # 영상을 열기 전에는 이동 범위 없음
 video_slider.setEnabled(False)  # 영상 연결 전에는 비활성화
@@ -910,57 +1424,69 @@ video_time.setStyleSheet("color:#91A7BD; font-size:12px;")
 time_layout.addWidget(video_current)
 time_layout.addWidget(video_time)
 center_layout.addLayout(time_layout)
+def seek_selected(position):
+    if selected_pane > 0:
+        extra_panes[selected_pane-1].at_end = False
+    active_cap = selected_capture()
+    if active_cap is None:
+        return
+    active_timer = pane_timer(selected_pane)
+    was_playing = active_timer.isActive()
+    active_timer.stop()
+    active_cap.set(cv2.CAP_PROP_POS_FRAMES, position)
+    if selected_pane > 0:
+        extra_panes[selected_pane-1].update_video()
+    else:
+        update_frame()
+    sync_selected_time()
+    if was_playing and selected_capture() is active_cap:
+        active_timer.start()  # 이동 전에 재생 중이었다면 계속 재생
+
 def jump_to_time():
-    if cap is None:
+    active_cap = selected_capture()
+    if active_cap is None:
         return
     try:
-        minutes, seconds = map(int, video_current.text().strip().split(":"))  # 분과 초 분리
+        minutes, seconds = map(int, video_current.text().strip().split(":"))
         if minutes < 0 or not 0 <= seconds < 60:
             raise ValueError
     except ValueError:
-        video_current.setToolTip("02:30처럼 분:초로 입력해 주세요")  # 잘못된 입력 안내
+        video_current.setToolTip("02:30처럼 분:초로 입력해 주세요")
         video_current.selectAll()
         return
-    fps = cap.get(cv2.CAP_PROP_FPS)  # 초당 프레임 수
+    fps = active_cap.get(cv2.CAP_PROP_FPS)
     if fps <= 0:
         return
-    position = min(int((minutes * 60 + seconds) * fps), video_slider.maximum())  # 영상 끝을 넘지 않게 제한
-    was_playing = timer.isActive()  # 기존 재생 상태 기억
-    timer.stop()
-    video_current.clearFocus()  # 입력을 끝내고 시간 자동 갱신 허용
-    cap.set(cv2.CAP_PROP_POS_FRAMES, position)  # 입력한 장면으로 이동
-    update_frame()  # 이동한 화면 표시
-    if was_playing and cap is not None:
-        timer.start()  # 재생 중이었다면 계속 재생
+    position = min(int((minutes * 60 + seconds) * fps), video_slider.maximum())
+    video_current.clearFocus()
+    seek_selected(position)
 
 video_current.returnPressed.connect(jump_to_time)  # Enter로 시간 이동
 def cancel_time_input():
-    current = 0  # 영상이 없으면 0초
-    if cap is not None:
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps > 0:
-            current = int(video_slider.value() / fps)  # 현재 영상 위치
-    video_current.setText(f"{current // 60:02d}:{current % 60:02d}")  # 현재 시간 복원
-    video_current.clearFocus()  # 시간 입력 종료
+    video_current.clearFocus()
+    sync_selected_time()  # 선택한 영상의 실제 시간으로 복원
 
 cancel_shortcut = QShortcut(QKeySequence("Escape"), video_current)  # 입력칸의 Esc
 cancel_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)  # 입력칸에서만 작동
 cancel_shortcut.activated.connect(cancel_time_input)  # Esc로 입력 취소
 
-seek_was_playing = False  # 드래그 전에 재생 중이었는지 저장
+seek_was_playing = False
+seek_pane = 0
 def begin_seek():
-    global seek_was_playing
-    seek_was_playing = timer.isActive()  # 기존 재생 상태 기억
-    timer.stop()  # 드래그 중에는 재생 잠시 멈춤
+    global seek_was_playing, seek_pane
+    seek_pane = selected_pane  # 드래그를 시작한 화면 기억
+    active_timer = pane_timer(seek_pane)
+    seek_was_playing = active_timer.isActive()
+    active_timer.stop()
 
 def finish_seek():
-    if cap is None:
+    if selected_pane != seek_pane:
+        if seek_was_playing:
+            (pane_timer(seek_pane)).start()
         return
-    position = video_slider.value()  # 손잡이를 놓은 위치
-    cap.set(cv2.CAP_PROP_POS_FRAMES, position)  # 해당 프레임으로 이동
-    update_frame()  # 이동한 장면 표시
-    if seek_was_playing and cap is not None:
-        timer.start()  # 원래 재생 중이었다면 이어서 재생
+    seek_selected(video_slider.value())
+    if seek_was_playing and selected_capture() is not None:
+        (pane_timer(selected_pane)).start()
 video_slider.sliderPressed.connect(begin_seek)  # 손잡이를 잡으면 실행
 video_slider.sliderReleased.connect(finish_seek)  # 손잡이를 놓으면 실행
 
@@ -985,10 +1511,15 @@ for button in (play_button, pause_button, stop_button):  # 세 버튼에 같은 
     """)
     playback_layout.addWidget(button)  # 버튼을 가로 줄에 추가
 def resume_video():
+    if selected_pane > 0:
+        extra_panes[selected_pane-1].resume()
+        return
     if stream_capture is not None:
         timer.start(33)  # 최신 실시간 영상 표시 다시 시작
         status_label.setText("● 실시간 재생 중")
     elif cap is not None:
+        if cap.get(cv2.CAP_PROP_POS_FRAMES) >= cap.get(cv2.CAP_PROP_FRAME_COUNT):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # 끝난 영상은 처음부터 재생
         timer.start()  # 일반 영상 이어서 재생
         status_label.setText("● 재생 중")
     else:
@@ -997,14 +1528,23 @@ def resume_video():
             play_video(item)  # 선택한 일반 영상 재생
 
 def pause_video():
+    if selected_pane > 0:
+        pane_timer(selected_pane).stop()
+        status_label.setText(f"● {selected_pane+1}번 일시정지")
+        return
     if (cap is not None or stream_capture is not None) and timer.isActive():
         timer.stop()  # 화면 갱신과 새 AI 분석 요청 멈추기
         status_label.setText("● 일시정지")
 
 def reset_video():
+    if selected_pane > 0:
+        extra_panes[selected_pane-1].stop()
+        set_pane_stats(selected_pane, 0, 0, 0.0)
+        status_label.setText(f"● {selected_pane+1}번 정지")
+        return
     global last_frame, zoom_roi  # 원본 프레임과 확대 영역 변경
     stop_video()  # 재생 중지와 영상 연결 해제
-    stats_label.setText("사람  0명     차량  0대     AI 처리  0.0 FPS")  # 정지 버튼을 누르면 수치 초기화
+    set_pane_stats(0, 0, 0, 0.0)  # 정지 버튼을 누르면 수치 초기화
     video_slider.setRange(0, 0)  # 정지하면 슬라이더 초기화
     video_current.setText("00:00")  # 현재 시간 초기화
     video_time.setText("/ 00:00")  # 전체 시간 초기화
@@ -1079,6 +1619,7 @@ def stream_failed(message, task_id):
     video_panel.setText(message)  # 오류 원인 표시
 
 def resolve_stream():
+    select_pane(0)
     url = stream_url.text().strip()
     if not url:
         stream_url.setFocus()
@@ -1099,6 +1640,9 @@ stream_url.returnPressed.disconnect(add_stream)
 stream_button.clicked.connect(resolve_stream)  # 버튼으로 주소 추출
 stream_url.returnPressed.connect(resolve_stream)  # Enter로도 실행
 
+for pane in extra_panes:
+    pane.worker.start()  # 2·3·4번 영상의 분석 스레드 시작
 ai_worker.start()                   # 별도 스레드에서 AI 모델 준비
+select_pane(0)  # 첫 번째 화면을 기본 조작 대상으로 설정
 window.show()                       # 완성한 창을 화면에 표시
 sys.exit(app.exec())                # 클릭·키보드 입력을 기다리며 프로그램 유지
