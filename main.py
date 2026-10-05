@@ -1,7 +1,7 @@
 import sys
 import cv2                                      # 영상 프레임 읽기
 import csv                                      # 표 형태의 이벤트 기록 저장
-from ai_worker import AIWorker  # 별도 스레드에서 AI 분석
+from ai_worker import AIWorker                  # 별도 스레드에서 AI 분석
 from PySide6.QtWidgets import QSlider           # 재생 위치 조절 막대
 from PySide6.QtCore import QPoint, QRect, Signal  # 좌표와 사각형, 선택 완료 신호
 from PySide6.QtWidgets import QRubberBand  # 드래그 선택 사각형
@@ -21,6 +21,9 @@ from PySide6.QtWidgets import QComboBox    # 여러 항목 중 하나를 선택�
 from datetime import datetime              # 경고가 발생한 시각
 from time import monotonic                 # 중복 경고 사이의 시간 계산
 from PySide6.QtCore import Qt
+from stream_resolver import StreamResolver # 유튜브 영상 주소 추출
+from stream_capture import StreamCapture  # 별도 작업에서 실시간 영상 읽기
+
 
 class VideoLabel(QLabel):
     region_selected = Signal(QRect)  # 기존 줄
@@ -289,13 +292,45 @@ left_layout = QVBoxLayout(left_panel)  # 내용을 위에서 아래로 배치
 left_layout.setContentsMargins(12, 16, 12, 12)  # 영역 안쪽 여백
 left_layout.setSpacing(12)  # 항목 사이 간격
 
-library_title = QLabel("영상 라이브러리")  # 상단 제목
-add_button = QPushButton("+ 영상 추가")  # 영상 선택 버튼
-video_list = QListWidget()  # 추가한 영상 이름을 표시할 목록
+library_title = QLabel("영상 라이브러리")       # 상단 제목
+add_button = QPushButton("+ 영상 추가")       # 영상 선택 버튼
+stream_button = QPushButton("+ 실시간 연결")  # 스트리밍 주소 입력 버튼
+video_list = QListWidget()                 # 추가한 영상 이름을 표시할 목록
 
 left_layout.addWidget(library_title)  # 제목 배치
-left_layout.addWidget(add_button)  # 버튼 배치
+left_layout.addWidget(add_button)     # 버튼 배치
 left_layout.addWidget(video_list, 1)  # 남은 높이를 목록으로 채우기
+
+stream_panel = QFrame()  # 실시간 연결 전용 영역
+stream_panel.setObjectName("streamPanel")
+stream_panel.setStyleSheet("""
+    QFrame#streamPanel {
+        background: #111F2E;
+        border: 1px solid #263B50;
+        border-radius: 8px;
+    }
+""")
+stream_layout = QVBoxLayout(stream_panel)  # 내용을 위아래로 배치
+stream_layout.setContentsMargins(12, 16, 12, 16)
+stream_layout.setSpacing(12)
+
+stream_title = QLabel("실시간 스트림")  # 영역 제목
+stream_hint = QLabel("스트림 URL (RTSP / HTTP)")
+stream_hint.setStyleSheet("color: #91A7BD; font-size: 12px;")
+
+stream_url = QLineEdit()  # 연결할 주소를 입력하는 칸
+stream_url.setPlaceholderText("rtsp://192.168.0.10:554/stream1")  # 입력 예시
+stream_url.setMinimumHeight(40)
+stream_url.setStyleSheet("background: #0B1420; color: #DCE6F2; border: 1px solid #36536C; border-radius: 6px; padding: 6px; font-size: 13px;")
+
+stream_button.setText("연결하기")  # 기존 버튼의 이름 변경
+stream_button.setMinimumHeight(42)
+
+stream_layout.addWidget(stream_title)
+stream_layout.addWidget(stream_hint)
+stream_layout.addWidget(stream_url)
+stream_layout.addWidget(stream_button)
+left_layout.addWidget(stream_panel)  # 영상 목록 아래에 전용 영역 추가
 
 def add_videos():  # 선택한 영상을 목록에 추가하는 함수
     paths, _ = QFileDialog.getOpenFileNames(window, "영상 선택", "videos", "영상 파일 (*.mp4 *.mov *.avi *.mkv *.webm)")
@@ -310,6 +345,26 @@ def add_videos():  # 선택한 영상을 목록에 추가하는 함수
         existing.add(path)                                 # 중복 확인용 경로 모음에도 추가
 
 add_button.clicked.connect(add_videos)                    # 버튼을 클릭하면 함수 실행
+
+def add_stream():
+    url = stream_url.text().strip()                   # 입력칸의 주소 가져오기
+    if not url:                                       # 주소가 비어 있으면 입력칸으로 이동
+        stream_url.setFocus()
+        return
+    for i in range(video_list.count()):               # 이미 등록한 주소인지 확인
+        item = video_list.item(i)
+        if item.data(Qt.ItemDataRole.UserRole) == url:
+            video_list.setCurrentItem(item)           # 기존 항목 선택
+            return
+    item = QListWidgetItem("실시간 스트리밍")             # 목록에 표시할 이름
+    item.setData(Qt.ItemDataRole.UserRole, url)       # 연결 주소 보관
+    item.setData(Qt.ItemDataRole.UserRole + 1, True)  # True: 실시간 영상
+    item.setToolTip(url)  # 마우스를 올리면 주소 표시
+    video_list.addItem(item)
+    video_list.setCurrentItem(item)
+
+stream_button.clicked.connect(add_stream)  # 연결하기 버튼에 함수 연결
+stream_url.returnPressed.connect(add_stream)  # 입력칸에서 Enter도 사용
 
 video_panel = VideoLabel("관제 영상\n\n영상을 선택해 주세요")    # 가운데: 영상 표시 자리
 right_panel = QFrame()                                    # 오른쪽 확대 화면과 이벤트 목록 공간
@@ -354,7 +409,9 @@ for panel in (video_panel,):  # 가운데 영상에만 기존 디자인 적용
     """)
 video_panel.setMinimumSize(1, 1)  # 큰 영상 때문에 창이 늘어나는 것 방지
 video_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-cap = None  # 현재 열려 있는 영상
+cap = None                         # 현재 열려 있는 영상
+stream_capture = None              # 현재 실시간 영상 작업, None은 연결 없음
+stream_capture_jobs = set()        # 종료될 때까지 영상 작업을 보관
 last_frame = None                  # 현재 화면의 원본 영상 보관
 last_raw_frame = None              # 박스 없는 확대용 원본 영상
 zoom_roi = None                    # 확대할 영역의 원본 좌표 보관
@@ -382,7 +439,7 @@ def save_zone_event(track_id, zone_number, level):
         writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), track_id, zone_number, level])
 
 def update_safety_alert():
-    if cap is None:
+    if cap is None and stream_capture is None:
         return  # 영상이 없으면 기존 대기 표시 유지
 
     ppe_rank = 2 if monotonic() < ppe_warning_until else 0  # 보호구 경고는 10초 유지
@@ -441,7 +498,7 @@ def check_zone_intrusion(objects, frame):
 def show_fall_result(falls, task_id):
     global fall_warning_until
 
-    if task_id != ai_task_id or cap is None:
+    if task_id != ai_task_id or (cap is None and stream_capture is None):
         return  # 이전 영상의 결과 무시
 
     now = monotonic()
@@ -476,7 +533,7 @@ def show_fall_result(falls, task_id):
 def show_ppe_result(violations, task_id):
     global ppe_warning_until  # 함수 밖에 있는 경고 종료 시간을 변경
 
-    if task_id != ai_task_id or cap is None:
+    if task_id != ai_task_id or (cap is None and stream_capture is None):
         return  # 이전 영상의 결과 무시
 
     now = monotonic()  # 현재 시간
@@ -514,7 +571,7 @@ def show_ppe_result(violations, task_id):
 
 def show_ai_result(frame, people, vehicles, objects, task_id, raw_frame, ai_fps):
     global last_frame, tracked_objects, last_raw_frame
-    if task_id != ai_task_id or cap is None:
+    if task_id != ai_task_id or (cap is None and stream_capture is None):
         return
     last_raw_frame = raw_frame                     # 같은 분석 결과의 원본 영상 보관
     tracked_objects = objects  # 현재 대상의 ID와 좌표 저장
@@ -542,9 +599,19 @@ ai_worker.fall_ready.connect(show_fall_result)  # 넘어짐 결과를 UI에 연�
 ai_worker.error.connect(show_ai_error)           # 오류 내용 받기
 
 def stop_video():
-    global cap, ai_task_id, ppe_warning_until, zone_alert_rank, fall_warning_until # 영상 연결과 작업 번호 사용
+    global cap, stream_capture, ai_task_id, ppe_warning_until, zone_alert_rank, fall_warning_until # 영상 연결과 작업 번호 사용
     ai_task_id += 1  # 이전 영상의 분석 결과 무효화
     timer.stop()
+    if stream_capture is not None:
+        stream_capture.stop()  # 실시간 영상 읽기 종료 요청
+        stream_capture = None  # 현재 연결 해제
+
+    stream_button.setEnabled(True)  # 연결 버튼 다시 사용 가능
+    stream_button.setText("연결하기")
+    video_current.setEnabled(True)  # 일반 영상의 시간 입력 다시 허용
+
+    video_slider.setEnabled(False)  # 이 줄부터 기존 코드는 그대로 유지
+
     video_slider.setEnabled(False)  # 영상 연결이 끝나면 이동 비활성화
     status_label.setText("● 대기 중")  # 정지할 때 표시
     zone_previous.clear()  # 이전 영상의 진입 상태 초기화
@@ -621,12 +688,12 @@ def update_zoom():
     image = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888).copy()  # Qt 이미지 생성
     pixmap = QPixmap.fromImage(image)  # 잘라낸 영상을 화면용 이미지로 변환
     size = zoom_panel.contentsRect().size()           # 확대 화면 크기
-    scaled = pixmap.scaled(
-        size,
-        Qt.AspectRatioMode.KeepAspectRatio,           # 대상 전체가 보이도록 비율 유지
-        Qt.TransformationMode.SmoothTransformation    # 부드럽게 확대
-    )
-    zoom_panel.setPixmap(scaled)                      # 가장자리를 자르지 않고 표시
+
+    scaled = pixmap.scaled(size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                           Qt.TransformationMode.SmoothTransformation)  # 비율을 유지하면서 확대 칸을 채움
+    left = max(0, (scaled.width() - size.width()) // 2)  # 넘치는 가로 부분의 절반
+    top = max(0, (scaled.height() - size.height()) // 2)  # 넘치는 세로 부분의 절반
+    zoom_panel.setPixmap(scaled.copy(left, top, size.width(), size.height()))  # 중앙 부분을 창 크기로 표시
 
 def select_zoom(rect):  # 화면에서 선택한 영역을 원본 영상 좌표로 변환
     global zoom_roi, selected_track_id
@@ -689,8 +756,15 @@ def select_target(point):
 
 video_panel.target_clicked.connect(select_target)        # 대상 클릭과 함수 연결
 
-def update_frame():  # 영상 한 장을 읽어 가운데에 표시
-    global last_frame  # 함수 밖의 현재 영상 변수 사용
+def update_frame():  # 최신 영상 한 장을 AI에 전달
+    global last_frame
+
+    if stream_capture is not None:
+        frame = stream_capture.take_frame()  # 기다리지 않고 최신 영상 가져오기
+        if frame is not None:
+            ai_worker.submit(frame, ai_task_id)  # 실시간 영상도 기존 AI로 분석
+        return  # 실시간 영상은 일반 파일 읽기를 실행하지 않기
+
     if cap is None:
         return
     ok, frame = cap.read()  # ok: 읽기 성공 여부, frame: 영상 한 장
@@ -739,9 +813,16 @@ def play_video(item):
 timer.timeout.connect(update_frame)               # 타이머가 울리면 다음 프레임 표시
 video_list.itemDoubleClicked.connect(play_video)  # 목록 더블클릭과 재생 연결
 def shutdown():
-    stop_video()  # 영상 재생 종료
+    stop_video()  # 현재 영상과 실시간 작업 정지 요청
+    for job in list(stream_capture_jobs):
+        job.stop()  # 남아 있는 영상 작업에도 종료 요청
+    for job in list(stream_jobs):
+        job.wait()  # 주소 추출 작업 종료 기다리기
+    for job in list(stream_capture_jobs):
+        job.wait()  # 영상 연결이 해제될 때까지 기다리기
     ai_worker.stop()  # AI 종료 요청
-    ai_worker.wait()  # 진행 중인 분석이 끝날 때까지 기다리기
+    ai_worker.wait()  # AI 작업 종료 기다리기
+app.aboutToQuit.connect(shutdown)  # 기존 연결 줄 유지
 app.aboutToQuit.connect(shutdown)  # 프로그램 종료 시 안전하게 정리
 layout.addWidget(left_panel, 2)                   # 왼쪽 너비 비중
 center_panel = QWidget()                          # 가운데 영상과 버튼을 담을 공간
@@ -903,18 +984,21 @@ for button in (play_button, pause_button, stop_button):  # 세 버튼에 같은 
         QPushButton:hover { background: #209BB8; }
     """)
     playback_layout.addWidget(button)  # 버튼을 가로 줄에 추가
-def resume_video():  # 일시정지한 영상 이어서 재생
-    if cap is not None:
-        timer.start()  # 기존 프레임 간격으로 다시 재생
-        status_label.setText("● 재생 중")  # 이어서 재생할 때 표시
+def resume_video():
+    if stream_capture is not None:
+        timer.start(33)  # 최신 실시간 영상 표시 다시 시작
+        status_label.setText("● 실시간 재생 중")
+    elif cap is not None:
+        timer.start()  # 일반 영상 이어서 재생
+        status_label.setText("● 재생 중")
     else:
-        item = video_list.currentItem()  # 목록에서 선택한 영상
+        item = video_list.currentItem()
         if item is not None:
-            play_video(item)  # 열린 영상이 없으면 처음부터 재생
+            play_video(item)  # 선택한 일반 영상 재생
 
 def pause_video():
-    if cap is not None and timer.isActive():  # 재생 중일 때만 일시정지
-        timer.stop()
+    if (cap is not None or stream_capture is not None) and timer.isActive():
+        timer.stop()  # 화면 갱신과 새 AI 분석 요청 멈추기
         status_label.setText("● 일시정지")
 
 def reset_video():
@@ -939,6 +1023,82 @@ center_layout.addLayout(playback_layout)  # 영상 아래에 버튼 줄 추가
 layout.addWidget(center_panel, 6)  # 가운데 공간을 메인 화면에 추가
 layout.addWidget(right_panel, 3)    # 오른쪽 너비 비중
 window.setCentralWidget(container)  # 세 구역을 메인 창에 연결
+
+stream_jobs = set()  # 실행 중인 연결 작업 보관
+
+def stream_ready(task_id):
+    if task_id != ai_task_id or stream_capture is None:
+        return  # 이전 연결의 알림은 무시
+    timer.start(33)  # 약 0.033초마다 최신 영상 확인
+    status_label.setText("● 실시간 재생 중")
+    stream_button.setEnabled(True)
+    stream_button.setText("연결하기")
+
+
+def stream_resolved(url, task_id):
+    global stream_capture, last_frame, last_raw_frame, zoom_roi, selected_track_id
+
+    if task_id != ai_task_id:
+        return  # 이전 주소 추출 결과는 무시
+
+    last_frame = None  # 이전 영상 초기화
+    last_raw_frame = None
+    zoom_roi = None  # 이전 확대 영역 초기화
+    selected_track_id = None  # 이전 선택 대상 해제
+    tracked_objects.clear()
+    zoom_name.hide()
+    zoom_title.setText("확대 화면")
+    zoom_panel.setText("확대할 영역을 선택해 주세요")
+    zoom_button.setChecked(False)
+
+    video_slider.setRange(0, 0)  # 실시간 영상은 시간 이동 사용 안 함
+    video_slider.setEnabled(False)
+    video_current.setText("LIVE")
+    video_current.setEnabled(False)  # 실시간 영상의 시간 입력 끄기
+    video_time.setText("")
+    video_title.setText("관제 영상 · 실시간 스트리밍")
+    window.setWindowTitle("드론 안전 관제 · 실시간 스트리밍")
+    video_panel.setText("실시간 영상을 연결하는 중입니다…")
+    status_label.setText("● 영상 연결 중")
+    stream_button.setText("영상 연결 중…")
+
+    job = StreamCapture(url, task_id, window)  # 별도 작업에서 영상 읽기
+    stream_capture = job                       # 현재 영상 작업 보관
+    stream_capture_jobs.add(job)               # 종료 전까지 작업 유지
+    job.ready.connect(stream_ready)            # 첫 영상 수신 알림 연결
+    job.error.connect(stream_failed)           # 오류 처리 연결
+    job.finished.connect(lambda: stream_capture_jobs.discard(job))
+    job.finished.connect(job.deleteLater)      # 끝난 작업 객체 정리
+    job.start()
+
+def stream_failed(message, task_id):
+    if task_id != ai_task_id:
+        return  # 이전 연결의 오류는 무시
+    stop_video()  # 오류가 난 영상 작업 정지
+    status_label.setText("● 연결 실패")
+    video_panel.setText(message)  # 오류 원인 표시
+
+def resolve_stream():
+    url = stream_url.text().strip()
+    if not url:
+        stream_url.setFocus()
+        return
+    stop_video()  # 이전 영상 종료, 작업 번호 갱신
+    stream_button.setEnabled(False)  # 추출 중에는 중복 클릭 방지
+    stream_button.setText("주소 확인 중…")
+    status_label.setText("● 연결 중")
+    job = StreamResolver(url, ai_task_id, window)
+    stream_jobs.add(job)  # 작업이 끝날 때까지 보관
+    job.resolved.connect(stream_resolved)
+    job.error.connect(stream_failed)
+    job.finished.connect(lambda: stream_jobs.discard(job))
+    job.start()  # 별도 스레드에서 주소 추출 시작
+
+stream_button.clicked.disconnect(add_stream)  # 기존 목록 등록 동작 해제
+stream_url.returnPressed.disconnect(add_stream)
+stream_button.clicked.connect(resolve_stream)  # 버튼으로 주소 추출
+stream_url.returnPressed.connect(resolve_stream)  # Enter로도 실행
+
 ai_worker.start()                   # 별도 스레드에서 AI 모델 준비
 window.show()                       # 완성한 창을 화면에 표시
 sys.exit(app.exec())                # 클릭·키보드 입력을 기다리며 프로그램 유지
