@@ -409,6 +409,35 @@ window.setWindowTitle("드론 안전 관제")  # 창 상단 제목
 window.resize(1400, 850)  # 처음 열리는 창 크기: 가로, 세로
 window.setMinimumSize(1000, 650)  # 창을 줄일 수 있는 최소 크기
 
+fullscreen_geometry = None  # 전체 화면으로 들어가기 전 창 위치와 크기
+fullscreen_was_maximized = False
+
+def sync_fullscreen_button():
+    fullscreen_button.setText("창으로 복귀" if window.isFullScreen() else "전체 화면")
+    fullscreen_button.setToolTip("전체 화면 해제 · Esc / F11" if window.isFullScreen() else "모니터 전체 화면 · F11")
+
+def leave_fullscreen():
+    if not window.isFullScreen():
+        return
+    window.showNormal()
+    if fullscreen_geometry is not None:
+        window.restoreGeometry(fullscreen_geometry)  # 이전 창 위치와 크기 복원
+    if fullscreen_was_maximized:
+        window.showMaximized()
+    sync_fullscreen_button()
+    QTimer.singleShot(0, refresh_panes)  # 복귀한 영상칸 크기에 맞춰 다시 그림
+
+def toggle_fullscreen():
+    global fullscreen_geometry, fullscreen_was_maximized
+    if window.isFullScreen():
+        leave_fullscreen()
+    else:
+        fullscreen_geometry = window.saveGeometry()
+        fullscreen_was_maximized = window.isMaximized()
+        window.showFullScreen()  # 분할 구성은 유지하고 창 전체만 확대
+        sync_fullscreen_button()
+        QTimer.singleShot(0, refresh_panes)
+
 window.setStyleSheet("""QMainWindow {background-color: #0B1420;}QLabel {color: #E8F0FA;font-size: 28px;font-weight: bold;}""")  # 배경색과 글자 모양 설정
 
 container = QWidget()
@@ -424,7 +453,7 @@ header_layout.setContentsMargins(18, 12, 18, 12)
 app_title = QLabel("드론 안전 관제")
 app_title.setStyleSheet("color: #E8F0FA; font-size: 26px; font-weight: bold;")
 
-subtitle = QLabel("AI SAFETY MONITOR · 4분할 v11")
+subtitle = QLabel("AI SAFETY MONITOR · 4분할 v12")
 subtitle.setStyleSheet("color: #91A7BD; font-size: 12px; font-weight: normal;")
 
 status_label = QLabel("● 대기 중")
@@ -444,6 +473,15 @@ header_layout.addWidget(status_label)
 alert_label = QLabel("● 감지 대기")  # 상단에 표시할 안전 상태
 alert_label.setStyleSheet("color: #91A7BD; background: #182C40; border-radius: 8px; padding: 8px 16px; font-size: 14px;")
 header_layout.addWidget(alert_label)  # 재생 상태 오른쪽에 추가
+fullscreen_button = QPushButton("전체 화면")  # 상단 오른쪽의 전체 화면 버튼
+fullscreen_button.setMinimumHeight(38)
+fullscreen_button.setStyleSheet("background:#007F99; color:#E8F0FA; border:1px solid #159BB0; border-radius:8px; padding:8px 14px; font-size:14px; font-weight:bold;")
+fullscreen_button.clicked.connect(toggle_fullscreen)
+header_layout.addWidget(fullscreen_button)
+fullscreen_shortcut = QShortcut(QKeySequence("F11"), window)  # 키보드로도 전환 가능
+fullscreen_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+fullscreen_shortcut.activated.connect(toggle_fullscreen)
+sync_fullscreen_button()
 root_layout.addWidget(header)
 
 content = QWidget()
@@ -1373,9 +1411,17 @@ def open_library_video(item):
 class PaneEvents(QObject):
     def eventFilter(self, obj, event):
         global focused_pane
+        if obj is window and event.type() == QEvent.Type.WindowStateChange:
+            sync_fullscreen_button()  # macOS 기본 전체 화면 버튼으로 바꿔도 문구 동기화
+            QTimer.singleShot(0, refresh_panes)
         if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            if isinstance(obj, QWidget) and obj.window() is not window:
+                return False  # 파일 선택 창의 Esc 동작 유지
             if video_current.hasFocus() or any(panel.zone_enabled and panel.zone_points for panel in video_panels):
-                return False
+                return False  # 시간 입력·작성 중인 구역 취소를 먼저 처리
+            if window.isFullScreen():
+                leave_fullscreen()
+                return True
             if focused_pane:
                 return_to_split()
                 return True
