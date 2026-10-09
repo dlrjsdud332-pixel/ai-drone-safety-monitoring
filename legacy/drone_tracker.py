@@ -1,504 +1,778 @@
-import subprocess  # 터미널 명령어 실행용
+from collections import deque
+import argparse
+import csv
+import shutil
+import sys
+import subprocess
+import threading
+import time
+from pathlib import Path
 import cv2
-import yt_dlp  # 유튜브 실제 영상 주소 가져오기
+import numpy as np
+import torch
+import yt_dlp
 from ultralytics import YOLO
-import time  # time 모듈을 불러옴 / 프레임 처리 시간을 측정해서 FPS를 계산할 때 사용
-             #import = 파이썬에서 기능을 불러온다
-             #time = 시간 측정 기능이 들어있는 파이썬 모듈
 
-youtube_url = "https://www.youtube.com/watch?v=C3hW1VrwmNc"    # 유튜브 영상 주소
-ydl_opts = {}                                                     # 별도 영상 형식을 강제로 지정하지 않고 yt-dlp가 자동 선택
-with yt_dlp.YoutubeDL(ydl_opts) as ydl:                           # yt-dlp 실행 준비
-    info = ydl.extract_info(youtube_url, download=False)          # 유튜브 영상 정보 가져오기
-    stream_url = subprocess.check_output(["yt-dlp", "-g", youtube_url], text=True).splitlines()[0]  # 실제 영상 주소 가져오기
-model = YOLO("models/yolo11s.pt")                                 # 가벼운 추적 모델                                        
-ppe_model = YOLO("models/ppe_best.pt")                            # 안전모·안전조끼 전용 모델
-pose_model = YOLO("models/yolo11n-pose.pt")                       # 사람의 몸과 관절 위치를 감지하는 경량 모델
-ppe_results = None                                                # 가장 최근 PPE 감지 결과를 저장
-frame_count = 0                                                   # 처리한 영상 프레임 수를 저장
-was_upright = {}                                                  # 추적 ID별로 이전에 서 있었는지 저장
-no_hardhat_until = 0                                              # 안전모 미착용 경고가 끝나는 시간
-ppe_last_logged = {}                                              # (사람 ID, 미착용 장비)별 마지막 기록 시각
-no_vest_until = 0                                                 # 안전조끼 미착용 경고가 끝나는 시간
-pose_results = None                                               # 가장 최근 관절 감지 결과 저장
-fall_until = {}                                                   # 추적 ID별 경고 종료 시간
-danger_previous_ids = set()                                       # 이전 프레임에 위험구역 안에 있던 사람 ID\
-danger_last_logged = {}                                           # ID별 마지막 위험구역 기록 시각
-show_ppe = True                                                   # 거리 영상에서는 안전장비 경고를 표시하지 않음
-track_history = {}                                                # track_history 딕셔너리에 각 추적 ID별 이동 좌표 기록을 저장 / {}=비어 있는 딕셔너리 생성 / 나중에 ID마다 좌표 목록을 따로 보관
-last_seen = {}                                                    # 각 추적 ID가 마지막으로 감지된 시간을 저장
-selected_id = None                                                # 현재 클릭해서 선택한 사람의 ID
-click_boxes = {}                                                  # 클릭할 수 있는 사람 박스 위치 저장
-drag_start = None                                                 # 드래그 시작 좌표
-drag_end = None                                                   # 드래그 끝 좌표
-drag_box = None                                                   # 확대할 영역
-danger_start = None                                               # 위험구역 첫 번째 클릭 좌표
-danger_end = None                                                 # 위험구역 두 번째 클릭 좌표
-danger_box = None                                                 # 완성된 위험구역 좌표
-is_setting_danger = False                                         # True: 위험구역을 지정하는 중
-is_dragging = False                                               # 현재 드래그 중인지 확인
-last_zoom = None                                                  # 마지막으로 확대된 화면 저장
-last_zoom_time = 0                                                # 마지막으로 사람을 감지한 시간 저장
-tool_mode = "SELECT"  
-DISPLAY_WIDTH = 1440                                              # 실제로 보여줄 창 너비
-DISPLAY_HEIGHT = 810                                              # 실제로 보여줄 창 높이 
-zoom_window_ready = False                                         # False: 확대창의 앞쪽 고정 설정을 아직 하지 않음                 
-                # 현재 도구: 선택, 확대, 이동
-def select_person(event, mouse_x, mouse_y, flags, param):
-    global selected_id, drag_start, drag_end, drag_box, is_dragging, tool_mode
-    global danger_start, danger_end, danger_box, is_setting_danger
-    mouse_x = int(mouse_x * 1920 / DISPLAY_WIDTH)   # 창 좌표 → 원본 영상 좌표
-    mouse_y = int(mouse_y * 1080 / DISPLAY_HEIGHT)
-    if event == cv2.EVENT_LBUTTONDOWN:
-            # 화면 위쪽 도구 버튼 클릭
-        print("마우스 클릭:", mouse_x, mouse_y)
-        if mouse_y <= 50:
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent if HERE.name == "legacy" else HERE  # legacy 안에서도 기존 models/data 사용
+WINDOW = "Drone Tracking"
+WIDTH, HEIGHT, HEADER, FOOTER = 1440, 810, 70, 32
+TOOLS = ("SELECT", "ZOOM", "MOVE", "RESET", "DANGER")
+VEHICLES = (2, 3, 5, 7)
 
-            if 10 <= mouse_x <= 110:
-                tool_mode = "SELECT"
+def fit_image(image, width, height):
+    h, w = image.shape[:2]
+    interpolation = cv2.INTER_AREA if width < w or height < h else cv2.INTER_CUBIC
+    canvas = cv2.resize(image, (width, height), interpolation=interpolation)  # 전체 영상을 잘림 없이 여백까지 채움
+    return canvas, (0, 0, width, height)  # 가로·세로별 좌표 변환으로 클릭 위치 유지
 
-            elif 120 <= mouse_x <= 220:
-                tool_mode = "ZOOM"
-                is_dragging = False
-                drag_start = None
-                drag_end = None
+def resolve_source(source):
+    if "youtube.com/" in source or "youtu.be/" in source:
+        options = {"quiet": True, "noplaylist": True, "format": "best[height<=720]/bestvideo[height<=720]/best", "socket_timeout": 10}
+        with yt_dlp.YoutubeDL(options) as ydl:
+            return ydl.extract_info(source, download=False)["url"]
+    if source.isdecimal():
+        return int(source)  # 0, 1 등: USB 카메라 번호
+    if "://" not in source:
+        path = Path(source).expanduser()
+        return str(path if path.is_absolute() else ROOT / path)
+    return source  # RTSP / HTTP 드론 스트림
 
-            elif 230 <= mouse_x <= 330:
-                tool_mode = "MOVE"
-
-            elif 340 <= mouse_x <= 440:
-                tool_mode = "SELECT"  # 초기화 후 다시 선택 모드
-                drag_box = None
-                selected_id = None
-                danger_box = None          # 저장된 위험구역 삭제
-                danger_start = None        # 위험구역 시작 좌표 초기화
-                danger_end = None          # 위험구역 끝 좌표 초기화
-                is_setting_danger = False  # 위험구역 설정 상태 종료
-
-            elif 450 <= mouse_x <= 550:
-                tool_mode = "DANGER"       # 위험구역 지정 모드
-                is_dragging = False        # 진행 중이던 ZOOM 영역 생성을 취소
-                is_setting_danger = False  # 지정 중 상태 초기화
-                danger_start = None        # 첫 좌표 초기화
-                danger_end = None          # 끝 좌표 초기화    
-            return
-        if tool_mode == "SELECT":
-            selected_id = None
-
-            for track_id, (x1, y1, x2, y2) in click_boxes.items():
-                if x1 - 25 <= mouse_x <= x2 + 25 and y1 - 25 <= mouse_y <= y2 + 25:
-                    selected_id = track_id
-                    break
-
-        elif tool_mode == "ZOOM":
-            drag_start = (mouse_x, mouse_y)  # 드래그 시작 좌표
-            drag_end = drag_start
-            is_dragging = True               # 마우스를 끌고 있는 상태
-            
-        elif tool_mode == "MOVE" and drag_box is not None:
-            x1, y1, x2, y2 = drag_box
-            box_w = x2 - x1
-            box_h = y2 - y1
-
-            new_x1 = max(0, min(mouse_x - box_w // 2, 1920 - box_w))
-            new_y1 = max(0, min(mouse_y - box_h // 2, 1080 - box_h))
-
-            drag_box = (
-                new_x1,
-                new_y1,
-                new_x1 + box_w,
-                new_y1 + box_h
-            )                                  # 클릭한 위치로 확대 영역 이동
-        elif tool_mode == "DANGER":
-            danger_start = (mouse_x, mouse_y)
-            danger_end = danger_start
-            is_setting_danger = True
-    elif event == cv2.EVENT_LBUTTONUP:
-        if tool_mode == "ZOOM" and is_dragging and drag_start is not None:
-            drag_end = (mouse_x, mouse_y)  # 마우스를 놓은 좌표
-            is_dragging = False            # 드래그 종료
-            x1, x2 = sorted((drag_start[0], drag_end[0]))
-            y1, y2 = sorted((drag_start[1], drag_end[1]))
-            if x2 - x1 > 20 and y2 - y1 > 20:
-                drag_box = (x1, y1, x2, y2)  # 확대할 영역 확정
-        elif tool_mode == "DANGER" and is_setting_danger and danger_start is not None:
-            danger_end = (mouse_x, mouse_y)
-            is_setting_danger = False
-            x1, x2 = sorted((danger_start[0], danger_end[0]))
-            y1, y2 = sorted((danger_start[1], danger_end[1]))
-            if x2 - x1 > 20 and y2 - y1 > 20:
-                danger_box = (x1, y1, x2, y2)
-    elif event == cv2.EVENT_MOUSEMOVE:
-        if is_dragging:
-            drag_end = (mouse_x, mouse_y)  # ZOOM 영역이 마우스를 따라감
-        elif is_setting_danger:
-            danger_end = (mouse_x, mouse_y)  # 위험구역이 마우스를 따라감
-
-cv2.namedWindow("Drone Tracking")
-cv2.setMouseCallback("Drone Tracking", select_person)
-cap = cv2.VideoCapture(stream_url)                            # 유튜브 실시간 영상 연결
-#cap = cv2.VideoCapture("http://192.168.219.134:8080/video")
-                         #이 부분은 카메라 주소 입력
-while True:
-    start_time = time.time()                                               # start_time 변수에 현재 시간을 대입 / time.time()=현재 시각을 초 단위 숫자로 가져오는 함수 / 프레임 처리가 시작된 시간을 기록
-    ret, frame = cap.read()
-    if not ret:
-        if cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0:
-            fall_until.clear()
-            was_upright.clear()
-        print("영상 신호 끊김 - 다시 연결 시도")                         # 프레임을 못 받으면 재연결 시도
-        cap.release()
-        cap = cv2.VideoCapture(stream_url)
-        continue
-    frame_count += 1  # 영상 한 장을 읽을 때마다 숫자 1 증가
-    results = model.track(frame, device="mps", persist=True, tracker="bytetrack.yaml", conf=0.10, iou=0.5, classes=[0, 1, 2, 3, 5, 7, 14, 15, 16], imgsz=832, verbose=False)  # ByteTrack으로 추적 ID 생성
-    # results 변수에 추적 결과를 대입 / frame=현재 영상 프레임 / persist=True=이전 프레임의 추적 ID 유지 / conf=0.10=신뢰도 15% 이상 사용 / iou=0.5=중복 박스 억제 기준 / classes=[0, 2]=사람(person)과 자동차(car)만 탐지 / imgsz=1920=YOLO가 분석할 입력 이미지 크기를 크게 해서 멀리 있는 작은 사람의 특징을 더 잘 보게 함
-    boxes = results[0].boxes                                              #boxes 변수에 탐지된 박스 목록을 대입 / results[0]=현재 프레임의 탐지 결과 / .boxes=탐지된 객체들의 박스 정보
-    if frame_count % 10 == 0:  # 10프레임마다 한 번만 PPE 검사
-        ppe_results = ppe_model.predict(
-            frame,                    # 현재 영상 화면 한 장
-            conf=0.25,                # 신뢰도 25% 이상만 사용
-            imgsz=640,                # 검사할 영상 크기
-            classes=[0, 1, 2, 4],     # 안전모·미착용·조끼만 검사
-            device="mps",             # 맥북 M4 그래픽 가속
-            verbose=False             # 터미널 반복 출력 숨김
-        )[0] if show_ppe else None
-        pose_results = pose_model.predict(
-            frame,                    # 현재 영상 한 장
-            conf=0.35,                # 신뢰도 35% 이상인 사람만 사용
-            imgsz=640,                # 관절을 검사할 영상 크기
-            device="mps",             # 맥북 M4 그래픽 가속 사용
-            verbose=False             # 터미널 반복 출력 숨김
-        )[0]
-        for pose_box in pose_results.boxes.xyxy:
-            x1, y1, x2, y2 = map(float, pose_box.tolist())
-            best_id = None
-            best_overlap = 0
-
-            for box in boxes:
-                if box.id is None or int(box.cls[0]) != 0:
-                    continue
-
-                bx1, by1, bx2, by2 = map(float, box.xyxy[0].tolist())
-                width = max(0, min(x2, bx2) - max(x1, bx1))
-                height = max(0, min(y2, by2) - max(y1, by1))
-                intersection = width * height
-                area_pose = (x2 - x1) * (y2 - y1)
-                area_track = (bx2 - bx1) * (by2 - by1)
-                overlap = intersection / (area_pose + area_track - intersection + 1e-6)
-
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best_id = int(box.id[0])
-
-            if best_overlap < 0.3:
-                continue
-            if (x2 - x1) > (y2 - y1) * 1.8:
-                if was_upright.get(best_id, False):
-                    print(f"넘어짐 의심 ID: {best_id} | 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-                    with open("data/fall_events.csv", "a", encoding="utf-8") as log_file:
-                        if log_file.tell() == 0:
-                            log_file.write("time,track_id\n")
-                        log_file.write(
-                            f"{time.strftime('%Y-%m-%d %H:%M:%S')},{best_id}\n"
-                        )
-
-                    fall_until[best_id] = time.time() + 10  # 지금부터 10초
-                    was_upright[best_id] = False
-            elif (y2 - y1) > (x2 - x1) * 1.2:
-                was_upright[best_id] = True
-
-    annotated_frame = results[0].plot(labels=False, conf=False, line_width=1)  # YOLO 기본 글자와 신뢰도 숨김 #
-    if pose_results is not None:
-        annotated_frame = pose_results.plot(
-            img=annotated_frame,  # 기존 객체 추적 화면 위에 표시
-            labels=False,         # 사람 이름 숨김
-            conf=False,           # 신뢰도 숫자 숨김
-            boxes=False,          # 포즈 모델의 사람 박스 숨김
-            kpt_radius=3,         # 관절점 크기
-            kpt_line=True         # True: 관절 사이 연결선 표시
-    )
-    if show_ppe and ppe_results is not None:
-        annotated_frame = ppe_results.plot(
-            img=annotated_frame,  # 기존 사람·자동차 화면 위에 PPE 박스 추가
-            labels=True,          # True: Hardhat, Safety Vest 이름 표시
-            conf=True,            # True: 감지 신뢰도 표시
-            line_width=2          # 박스 선 굵기
-        )
-        ppe_classes = [
-            int(ppe_box.cls[0])  # 감지된 종류 번호
-            for ppe_box in ppe_results.boxes
-            if float(ppe_box.conf[0]) >= 0.50  # 신뢰도 50% 이상만 경고에 사용
-        ]
-        current_time = time.time()  # 현재 시간
-
-            # 미착용이 감지되면 경고 종료 시간을 10초 뒤로 갱신
-        if 1 in ppe_classes:
-            no_hardhat_until = current_time + 10
-            
-        if 2 in ppe_classes:
-            no_vest_until = current_time + 10
-
-        # 마지막 감지 후 10초 동안 경고문 표시
-        if current_time < no_hardhat_until:
-            cv2.putText(annotated_frame,"WARNING: NO HARDHAT",(1200, 100),cv2.FONT_HERSHEY_SIMPLEX,1.2,(0, 0, 255),3)
-
-        if current_time < no_vest_until:
-            cv2.putText(annotated_frame,"WARNING: NO SAFETY VEST",(1200, 160),cv2.FONT_HERSHEY_SIMPLEX,1.2,(0, 0, 255),3)
-    person_count = 0
-    car_count = 0                                                              # 현재 화면의 자동차 수
-    click_boxes.clear()                                                        # 이전 화면의 박스 위치를 지우고 현재 화면 기준으로 다시 저장
-    danger_current_ids = set()  # 이번 프레임에 위험구역 안에 있는 사람 ID
-    for box in boxes:
-       class_id = int(box.cls[0])
-       track_id = int(box.id[0]) if box.id is not None else -1
-       if track_id != -1:                                                      #if = 만약 / #track_id != -1 = 추적 ID가 -1이 아니라면 / #: = 그러면 아래 코드를 실행   
-           last_seen[track_id] = time.time()                                   # 이 ID를 마지막으로 본 시간을 갱신 
-           x, y, w, h = box.xywh[0]
-           box_x1, box_y1, box_x2, box_y2 = map(int, box.xyxy[0].tolist())
-           click_boxes[track_id] = (box_x1, box_y1, box_x2, box_y2)
-           x1 = max(5, int(x - w / 2) - 25)                                         # 왼쪽 화면 밖으로 안 나가게
-           y1 = max(20, int(y - h / 2))                                        # 위쪽 화면 밖으로 안 나가게
-           center = (int(x), int(y))
-           if track_id not in track_history:
-               track_history[track_id] = []
-           track_history[track_id].append(center)
-           points = track_history[track_id]
-           if len(points) > 60:                                 #~만약 길이    
-               points.pop(0)                                    #.pop() → 목록에서 하나를 꺼내면서 삭제
-               for i in range(1, len(points)):
-                    pt1 = points[i - 1]                         # 이전 좌표
-                    pt2 = points[i]                             # 현재 좌표
-                    distance = ((pt2[0] - pt1[0]) ** 2 + (pt2[1] - pt1[1]) ** 2) ** 0.5
-
-                    if distance < 80:                           # 이전 위치와 현재 위치의 거리가 80픽셀 미만일 때만 궤적 연결
-                        cv2.line(annotated_frame, pt1, pt2, (255, 0, 255), 5)  # 노란 궤적 선 두께를 5로 표시
-
-               if len(points) >= 5:                             # 좌표가 5개 이상 쌓였을 때 방향 표시
-                    start = points[-5]                          # 5개 전 위치를 사용해 이동 방향을 더 크게 표시
-                    end = points[-1]                            # 현재 위치
-                    dx = end[0] - start[0]                      # 가로 이동량 계산: +면 오른쪽, -면 왼쪽
-                    dy = end[1] - start[1]                      # 세로 이동량 계산: +면 아래쪽, -면 위쪽
-                    speed = (dx ** 2 + dy ** 2) ** 0.5
-                    if speed < 3:                               # 화면상 이동량이 작으면 정지 상태로 판단
-                        direction = "STOP"
-                    elif abs(dx) > abs(dy):                        # 가로 이동이 세로 이동보다 크면 좌우 방향 판단
-                        direction = "RIGHT" if dx > 0 else "LEFT"  # dx가 +면 오른쪽, -면 왼쪽
-                    else:                                          # 가로보다 세로 이동이 더 크면 위/아래 방향 판단
-                        direction = "DOWN" if dy > 0 else "UP"     # dy가 +면 아래쪽, -면 위쪽
-                    if direction != "STOP":  # 정지 상태가 아닐 때만 화살표 표시    
-                        cv2.arrowedLine(annotated_frame, start, end, (0, 0, 255), 3, tipLength=0.4)  # 최신 이동 방향만 표시
-                    
-                    if class_id == 0:
-                        object_name = "HUMAN"
-                        box_color = (0, 255, 0)       # 초록
-                    elif class_id in (2, 3, 5, 7):
-                        object_name = "VEHICLE"
-                        box_color = (255, 0, 0)       # 파랑
-                    else:
-                        object_name = "OBJECT"
-                        box_color = (0, 255, 255)     # 노랑
-                    label = f"{object_name} ID:{track_id} | {direction} | Speed:{speed:.1f}"  # ID, 방향, 속도를 한 줄로 정리
-                    (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-                    x1 = min(x1, annotated_frame.shape[1] - text_w - 10)                 # 오른쪽 화면 밖으로 안 나가게
-                    cv2.rectangle(annotated_frame, (x1, y1 - text_h - 10), (x1 + text_w + 6, y1), (0, 0, 0), -1)  # 라벨 뒤 검은 배경
-                    cv2.putText(annotated_frame, label, (x1, y1 - 5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 3)         # 검은 외곽선
-
-                    cv2.putText(annotated_frame, label, (x1, y1 - 5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)   # 흰 글씨
-                    if class_id == 0:
-                            person_count += 1
-                            if show_ppe and frame_count % 10 == 0 and ppe_results is not None and track_id != -1:
-                                missing_items = set()  # 이번 검사에서 이 사람에게 감지된 미착용 항목
-                                for ppe_box in ppe_results.boxes:
-                                    item = int(ppe_box.cls[0])  # 1: 안전모 없음, 2: 조끼 없음
-                                    if item not in (1, 2) or float(ppe_box.conf[0]) < 0.50:
-                                        continue
-                                    px1, py1, px2, py2 = map(float, ppe_box.xyxy[0].tolist())
-                                    center_x = (px1 + px2) / 2
-                                    center_y = (py1 + py2) / 2
-                                    if box_x1 <= center_x <= box_x2 and box_y1 <= center_y <= box_y2:
-                                        missing_items.add(item)
-                                now = time.time()
-                                for item in missing_items:
-                                    key = (track_id, item)
-                                    if now - ppe_last_logged.get(key, 0) >= 10:
-                                        with open("data/ppe_events.csv", "a", encoding="utf-8") as log_file:
-                                            if log_file.tell() == 0:
-                                                log_file.write("time,track_id,missing_item\n")
-                                            name = "NO_HARDHAT" if item == 1 else "NO_SAFETY_VEST"
-                                            log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')},{track_id},{name}\n")
-                                        ppe_last_logged[key] = now
-                            cv2.rectangle(
-                                annotated_frame,
-                                (box_x1, box_y1),       # 사람 박스 왼쪽 위
-                                (box_x2, box_y2),       # 사람 박스 오른쪽 아래
-                                box_color, 2)           # 초록색, 선 굵기 2
-                            if danger_box is not None:
-                                dx1, dy1, dx2, dy2 = danger_box
-
-                                foot_x = (box_x1 + box_x2) // 2  # 사람 발의 가로 중심
-                                foot_y = box_y2                  # 사람 박스의 맨 아래
-                                if dx1 <= foot_x <= dx2 and dy1 <= foot_y <= dy2:
-                                    if track_id != -1:
-                                        danger_current_ids.add(track_id)
-                                    cv2.rectangle(annotated_frame,
-                                    (box_x1, box_y1),
-                                    (box_x2, box_y2),
-                                    (0, 0, 255), 4)
-                                    cv2.putText(
-                                        annotated_frame,
-                                        "DANGER! INTRUSION",
-                                        (950, 100),  # 숫자가 커질수록 오른쪽으로 이동
-                                        cv2.FONT_HERSHEY_SIMPLEX,
-                                        1.2, (0, 0, 255), 3)
-                    elif class_id in (2, 3, 5, 7):
-                        car_count += 1  # 자동차·오토바이·버스·트럭
-                    if class_id != 0:
-                        cv2.rectangle(
-                            annotated_frame,
-                            (box_x1, box_y1),
-                            (box_x2, box_y2),
-                            box_color, 2
-                        )
-    new_danger_ids = danger_current_ids - danger_previous_ids
-
-    for tid in new_danger_ids:
-        now = time.time()
-        if now - danger_last_logged.get(tid, 0) >= 10:
-            with open("data/danger_events.csv", "a", encoding="utf-8") as log_file:
-                if log_file.tell() == 0:
-                    log_file.write("time,track_id\n")
-                log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')},{tid}\n")
-            danger_last_logged[tid] = now
-
-    danger_previous_ids = danger_current_ids
-    old_ids = [tid for tid, t in last_seen.items() if time.time() - t > 10]
-    for tid in old_ids:
-        track_history.pop(tid, None)
-        last_seen.pop(tid, None)
-        print(f"삭제 ID: {tid}")  # 10초 이상 안 보인 ID가 실제로 삭제됐는지 확인
-
-    end_time = time.time()                    # end_time 변수에 현재 시간을 대입 / time.time()=현재 시각을 초 단위로 가져옴 / 한 프레임의 처리가 끝난 시간을 기록
-    fps = 1 / (end_time - start_time)         # fps 변수에 초당 처리 가능한 프레임 수를 대입 / end_time-start_time=프레임 1장을 처리하는 데 걸린 시간(초) / 1을 처리시간으로 나누어 FPS 계산
-    cv2.putText(annotated_frame, f"People: {person_count}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    cv2.putText(annotated_frame, f"Vehicles: {car_count}", (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    if selected_id in click_boxes:
-        tx1, ty1, tx2, ty2 = click_boxes[selected_id]
-        last_target_center = ((tx1 + tx2) // 2, (ty1 + ty2) // 2)
-    if selected_id in click_boxes:                                # 이 줄을 새로 추가
-        sx1, sy1, sx2, sy2 = click_boxes[selected_id]
-        cv2.rectangle(annotated_frame, (sx1, sy1), (sx2, sy2), (0, 255, 255), 4)
-        pad = 60
-        frame_h, frame_w = frame.shape[:2]
-        crop_x1 = max(0, sx1 - pad)
-        crop_y1 = max(0, sy1 - pad)
-        crop_x2 = min(frame_w, sx2 + pad)
-        crop_y2 = min(frame_h, sy2 + pad)
-        zoom = frame[crop_y1:crop_y2, crop_x1:crop_x2]
-
-        if zoom.size > 0:
-            zoom = cv2.resize(zoom, (320, 240), interpolation=cv2.INTER_CUBIC)
-            blurred = cv2.GaussianBlur(zoom, (0, 0), 1.0)
-            zoom = cv2.addWeighted(zoom, 1.5, blurred, -0.5, 0)
-            cv2.rectangle(zoom, (0, 0), (319, 239), (0, 255, 255), 3)
-            cv2.putText(zoom, f"Selected ID: {selected_id}", (10, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            last_zoom = zoom.copy()
-            last_zoom_time = time.time()
-            annotated_frame[frame_h - 250:frame_h - 10,
-                            frame_w - 330:frame_w - 10] = zoom
-            
-    elif selected_id is not None and last_zoom is not None:
-            if time.time() - last_zoom_time < 5:
-                frame_h, frame_w = annotated_frame.shape[:2]
-                lost_zoom = last_zoom.copy()
-
-                cv2.putText(lost_zoom, "TRACKING LOST", (10, 220),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-                annotated_frame[frame_h - 250:frame_h - 10,
-                        frame_w - 330:frame_w - 10] = lost_zoom
-            else:
-                selected_id = None  # 화면 위쪽 도구 버튼 표시
-                last_zoom = None    # 드래그 중인 영역을 하늘색 사각형으로 표시
-    # 지정 중인 위험구역을 빨간 사각형으로 표시
-    if is_setting_danger and danger_start is not None and danger_end is not None:
-        cv2.rectangle(
-            annotated_frame, danger_start, danger_end, (0, 0, 255), 3)
-
-    # 완성된 위험구역을 계속 표시
-    if danger_box is not None:
-        dx1, dy1, dx2, dy2 = danger_box
-        cv2.rectangle(
-            annotated_frame, (dx1, dy1), (dx2, dy2), (0, 0, 255), 3)
-    if is_dragging and drag_start is not None and drag_end is not None:
-        cv2.rectangle(annotated_frame, drag_start, drag_end,
-                      (255, 255, 0), 3)
-
-    # 드래그가 끝난 영역을 새 창으로 확대
-    if drag_box is not None:
-        dx1, dy1, dx2, dy2 = drag_box
-        frame_h, frame_w = frame.shape[:2]
-
-        dx1 = max(0, min(dx1, frame_w - 1))
-        dy1 = max(0, min(dy1, frame_h - 1))
-        dx2 = max(dx1 + 1, min(dx2, frame_w))
-        dy2 = max(dy1 + 1, min(dy2, frame_h))
-
-        area_zoom = frame[dy1:dy2, dx1:dx2]
-        if area_zoom.size > 0:
-            area_zoom = cv2.resize(
-                area_zoom, (640, 360),
-                interpolation=cv2.INTER_LANCZOS4  # 확대 화질 개선
-            )
-            blurred = cv2.GaussianBlur(area_zoom, (0, 0), 1.0)
-            area_zoom = cv2.addWeighted(area_zoom, 1.5, blurred, -0.5, 0)   # 확대 화면 선명화
-
-        if not zoom_window_ready:
-            cv2.namedWindow("Area Zoom", cv2.WINDOW_AUTOSIZE)
-            cv2.imshow("Area Zoom", area_zoom)
-            cv2.setWindowProperty("Area Zoom", cv2.WND_PROP_TOPMOST, 1)
-            cv2.moveWindow("Area Zoom", 980, 50)
-            zoom_window_ready = True
+class Channel:
+    def __init__(self, number, source, ppe):
+        self.number, self.source, self.show_ppe = number, source, ppe
+        self.lock, self.stop_event = threading.Lock(), threading.Event()
+        self.pending, self.sequence, self.done = None, 0, -1
+        self.overlay_mask, self.overlay_time, self.received_at = None, 0.0, 0.0
+        self.receive_fps, self.receive_count, self.receive_start = 0.0, 0, time.monotonic()
+        self.process_lock, self.process = threading.Lock(), None
+        self.raw, self.image, self.objects = None, None, {}
+        self.status, self.fps, self.people, self.vehicles = "Connecting", 0.0, 0, 0
+        self.selected_id, self.roi, self.danger = None, None, None
+        self.mode, self.drag_start, self.drag_end = "SELECT", None, None
+        self.history, self.last_seen, self.upright, self.fall_until = {}, {}, {}, {}
+        self.ppe_logged, self.danger_logged, self.previous_danger = {}, {}, set()
+        self.hardhat_until, self.vest_until, self.frame_count = 0.0, 0.0, 0
+        self.ppe_result, self.pose_result = None, None
+        self.last_zoom, self.zoom_time = None, 0.0
+        self.reader = threading.Thread(target=self.read_loop, daemon=True) if source else None
+        if self.reader is not None:
+            self.reader.start()
         else:
-            cv2.imshow("Area Zoom", area_zoom)
+            self.status = "No source"
+    def log(self, kind, track_id, item=None):
+        folder = ROOT / "data" / "multi_tracker" / f"camera_{self.number}"
+        folder.mkdir(parents=True, exist_ok=True)  # 영상별 CSV: 동일 ID가 섞이지 않음
+        path = folder / f"{kind}_events.csv"
+        with path.open("a", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            if file.tell() == 0:
+                writer.writerow(["time", "track_id"] + (["missing_item"] if item else []))
+            writer.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), track_id] + ([item] if item else []))
+    def publish(self, frame):
+        now = time.monotonic()
+        with self.lock:
+            self.pending, self.sequence, self.status = frame, self.sequence + 1, "Playing"
+            self.received_at = now
+            self.receive_count += 1
+            elapsed = now - self.receive_start
+            if elapsed >= 1:
+                self.receive_fps = self.receive_count / elapsed
+                self.receive_count, self.receive_start = 0, now
+    def stop(self):
+        self.stop_event.set()
+        with self.process_lock:
+            if self.process is not None and self.process.poll() is None:
+                try:
+                    self.process.terminate()  # FFmpeg 읽기 대기도 즉시 해제
+                except OSError:
+                    pass
+    def read_ffmpeg(self, url):
+        command = [shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "warning", "-nostdin", "-rw_timeout", "15000000"]
+        if url.startswith(("https://", "http://")):
+            command += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2"]
+        if ".m3u8" in url:
+            command += ["-live_start_index", "-2"]  # 라이브 목록의 끝부분에서 시작
+        if url.startswith("rtsp://"):
+            command += ["-rtsp_transport", "tcp"]
+        command += ["-re", "-i", url, "-an", "-sn", "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2", "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=None, bufsize=0)
+        with self.process_lock:
+            self.process = process
+        finished = threading.Event()
+        last_data = [time.monotonic()]
+        def watchdog():
+            while not finished.wait(0.5):
+                if self.stop_event.is_set() or time.monotonic() - last_data[0] > 25:
+                    if process.poll() is None:
+                        try:
+                            process.kill()  # 일정 시간 프레임이 없으면 새 주소로 재연결
+                        except OSError:
+                            pass
+                    return
+        guard = threading.Thread(target=watchdog, daemon=True)
+        guard.start()
+        try:
+            frame_bytes = 1280 * 720 * 3
+            while not self.stop_event.is_set():
+                data = bytearray()
+                while len(data) < frame_bytes:
+                    chunk = process.stdout.read(frame_bytes - len(data))
+                    if not chunk:
+                        raise RuntimeError("FFmpeg stream disconnected")
+                    data.extend(chunk)  # 파이프의 부분 수신을 한 프레임까지 모음
+                last_data[0] = time.monotonic()
+                self.publish(np.frombuffer(data, dtype=np.uint8).reshape(720, 1280, 3).copy())
+        finally:
+            finished.set()
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+            guard.join(timeout=1)
+            with self.process_lock:
+                if self.process is process:
+                    self.process = None
+    def read_loop(self):
+        while not self.stop_event.is_set():
+            cap = None
+            try:
+                resolved = resolve_source(self.source)
+                local = isinstance(resolved, str) and "://" not in resolved
+                if local and not Path(resolved).is_file():
+                    raise FileNotFoundError(resolved)
+                if isinstance(resolved, str) and "://" in resolved and shutil.which("ffmpeg"):
+                    self.read_ffmpeg(resolved)
+                    continue
+                if isinstance(resolved, str) and "://" in resolved:
+                    cap = cv2.VideoCapture(resolved, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 20000])
+                else:
+                    cap = cv2.VideoCapture(resolved)
+                if not cap.isOpened():
+                    raise RuntimeError("Cannot open source")
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                interval = 1 / fps if local and 1 <= fps <= 240 else 0
+                deadline = time.monotonic()
+                while not self.stop_event.is_set():
+                    ok, frame = cap.read()
+                    if not ok:
+                        if local:
+                            with self.lock:
+                                self.status = "Ended"
+                            return  # 파일 끝에서는 마지막 화면 유지
+                        raise RuntimeError("Stream disconnected")
+                    self.publish(frame)
+                    if interval:
+                        deadline += interval
+                        self.stop_event.wait(max(0, deadline - time.monotonic()))
+            except Exception as error:
+                with self.lock:
+                    self.status = "Connection error - retrying"
+                print(f"[Camera {self.number}] {error}")
+                self.stop_event.wait(3)
+            finally:
+                if cap is not None:
+                    cap.release()  # 읽기 스레드에서만 해제: 다른 스레드와 충돌 방지
 
-    buttons = [
-        ("SELECT", 10, 110),
-        ("ZOOM", 120, 220),
-        ("MOVE", 230, 330),
-        ("RESET", 340, 440),
-        ("DANGER", 450, 550)
-    ]
-    for button_name, button_x1, button_x2 in buttons:
-        button_color = (0, 160, 0) if tool_mode == button_name else (60, 60, 60)
-
-        if button_name == "RESET":
-            button_color = (0, 0, 180)
-
-        cv2.rectangle(annotated_frame, (button_x1, 5),
-                      (button_x2, 45), button_color, -1)
-        cv2.putText(annotated_frame, button_name,
-                    (button_x1 + 12, 32),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            
+class Analyzer(threading.Thread):
+    def __init__(self, channels, device):
+        super().__init__(daemon=True)
+        self.channels, self.device, self.stop_event = channels, device, threading.Event()
+        self.error = None
+    def run(self):
+        try:
+            models = {}  # 새 영상으로 바꾸면 추적기도 새로 생성
+            pose = YOLO(str(ROOT / "models/yolo11n-pose.pt"))
+            ppe = YOLO(str(ROOT / "models/ppe_best.pt"))  # P키로 나중에 켜도 모델을 사용할 수 있음
+            while not self.stop_event.is_set():
+                worked = False
+                active_channels = list(self.channels)
+                for old_channel in list(models):
+                    if old_channel not in active_channels:
+                        del models[old_channel]
+                for channel in active_channels:
+                    if self.stop_event.is_set():
+                        break
+                    with channel.lock:
+                        frame, sequence = channel.pending, channel.sequence
+                    if frame is None or sequence == channel.done:
+                        continue
+                    if channel not in models:
+                        models[channel] = YOLO(str(ROOT / "models/yolo11s.pt"))
+                    started = time.perf_counter()
+                    self.process(channel, models[channel], pose, ppe, frame)
+                    channel.done = sequence
+                    channel.fps = 1 / max(time.perf_counter() - started, 1e-6)
+                    worked = True
+                if not worked:
+                    self.stop_event.wait(0.01)
+        except Exception as error:
+            self.error = str(error)
+            print("AI 오류:", error)
+    def process(self, c, model, pose, ppe, frame):
+        result = model.track(frame, device=self.device, persist=True, tracker="bytetrack.yaml", conf=0.10, iou=0.5, classes=[0, 1, 2, 3, 5, 7, 14, 15, 16], imgsz=832, verbose=False)[0]
+        objects = {}
+        for box in result.boxes:
+            if box.id is not None:
+                objects[int(box.id[0])] = (int(box.cls[0]), tuple(map(int, box.xyxy[0].tolist())))
+        c.frame_count += 1
+        inspect = c.frame_count % 10 == 0
+        if inspect:
+            c.pose_result = pose.predict(frame, conf=0.35, imgsz=640, device=self.device, verbose=False)[0]
+            c.ppe_result = ppe.predict(frame, conf=0.25, imgsz=640, classes=[0, 1, 2, 4], device=self.device, verbose=False)[0] if c.show_ppe else None
+        if self.device == "mps":
+            torch.mps.synchronize()  # 모든 모델 추론은 한 스레드에서 순서대로 실행
+        image = frame.copy()
         now = time.time()
-        fall_until = {fall_id: until for fall_id, until in fall_until.items() if now < until}
+        if inspect and c.pose_result is not None:
+            for coords in c.pose_result.boxes.xyxy:
+                x1, y1, x2, y2 = map(float, coords.tolist())
+                best_id, best_iou = None, 0
+                for tid, (kind, (bx1, by1, bx2, by2)) in objects.items():
+                    if kind != 0:
+                        continue
+                    intersection = max(0, min(x2, bx2) - max(x1, bx1)) * max(0, min(y2, by2) - max(y1, by1))
+                    overlap = intersection / ((x2 - x1) * (y2 - y1) + (bx2 - bx1) * (by2 - by1) - intersection + 1e-6)
+                    if overlap > best_iou:
+                        best_id, best_iou = tid, overlap
+                if best_iou < 0.3:
+                    continue
+                if x2 - x1 > (y2 - y1) * 1.8 and c.upright.get(best_id, False):
+                    c.log("fall", best_id)
+                    c.fall_until[best_id], c.upright[best_id] = now + 10, False
+                elif y2 - y1 > (x2 - x1) * 1.2:
+                    c.upright[best_id] = True
+        if c.show_ppe and c.ppe_result is not None:
+            image = c.ppe_result.plot(img=image, labels=True, conf=True, line_width=1)
+        with c.lock:
+            danger = c.danger
+        inside = set()
+        for tid, (kind, rect) in objects.items():
+            x1, y1, x2, y2 = rect
+            center = ((x1 + x2) // 2, (y1 + y2) // 2)
+            c.last_seen[tid] = now
+            points = c.history.setdefault(tid, [])
+            points.append(center)
+            del points[:-60]
+            name = "HUMAN" if kind == 0 else "VEHICLE" if kind in VEHICLES else "OBJECT"
+            color = (0, 255, 0) if kind == 0 else (255, 160, 0) if kind in VEHICLES else (0, 255, 255)
+            if kind == 0 and danger is not None:
+                dx1, dy1, dx2, dy2 = danger
+                if dx1 <= center[0] <= dx2 and dy1 <= y2 <= dy2:
+                    inside.add(tid)
+                    color = (0, 0, 255)
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 1)
+            cv2.putText(image, f"{name} ID:{tid}", (max(0, x1), max(15, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+            if kind == 0 and inspect and c.show_ppe and c.ppe_result is not None:
+                missing = set()
+                for box in c.ppe_result.boxes:
+                    item = int(box.cls[0])
+                    if item not in (1, 2) or float(box.conf[0]) < 0.5:
+                        continue
+                    px1, py1, px2, py2 = map(float, box.xyxy[0].tolist())
+                    if x1 <= (px1 + px2) / 2 <= x2 and y1 <= (py1 + py2) / 2 <= y2:
+                        missing.add(item)
+                for item in missing:
+                    if item == 1:
+                        c.hardhat_until = now + 10
+                    else:
+                        c.vest_until = now + 10
+                    key = tid, item
+                    if now - c.ppe_logged.get(key, 0) >= 10:
+                        c.log("ppe", tid, "NO_HARDHAT" if item == 1 else "NO_SAFETY_VEST")
+                        c.ppe_logged[key] = now
+        for tid in inside - c.previous_danger:
+            if now - c.danger_logged.get(tid, 0) >= 10:
+                c.log("danger", tid)
+                c.danger_logged[tid] = now
+        c.previous_danger = inside
+        for tid in list(c.last_seen):
+            if now - c.last_seen[tid] > 10:
+                c.last_seen.pop(tid, None)
+                c.history.pop(tid, None)
+                c.upright.pop(tid, None)
+        c.fall_until = {tid: until for tid, until in c.fall_until.items() if now < until}
+        warnings = (["DANGER! INTRUSION"] if inside else [])
+        warnings += (["WARNING: NO HARDHAT"] if now < c.hardhat_until else [])
+        warnings += (["WARNING: NO SAFETY VEST"] if now < c.vest_until else [])
+        warnings += [f"POSSIBLE FALL ID:{tid}" for tid in list(c.fall_until)[:3]]
+        for row, text in enumerate(warnings):
+            cv2.putText(image, text, (15, 30 + row * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        mask = np.any(image != frame, axis=2)  # 원본 배경을 제외하고 감지 선·글자만 분리
+        with c.lock:
+            c.overlay_mask, c.overlay_time = mask, time.monotonic()
+            c.raw, c.image, c.objects = frame, image, objects
+            c.people = sum(int(box.cls[0]) == 0 for box in result.boxes)
+            c.vehicles = sum(int(box.cls[0]) in VEHICLES for box in result.boxes)
 
-        for row, fall_id in enumerate(list(fall_until)[:3]):
-            cv2.putText(
-                annotated_frame, f"WARNING: POSSIBLE FALL ID:{fall_id}",
-                (30, 250 + row * 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2
-            )
+def live_snapshot(channel):
+    with channel.lock:
+        raw = channel.pending if channel.pending is not None else channel.raw
+        image, mask, objects = channel.image, channel.overlay_mask, channel.objects
+        recent = time.monotonic() - channel.overlay_time <= 0.7
+    if raw is None:
+        return None, None, {}
+    display = raw.copy()  # AI 완료를 기다리지 않고 최신 수신 영상을 표시
+    if recent and image is not None and mask is not None and image.shape == raw.shape:
+        display[mask] = image[mask]
+    else:
+        objects = {}  # 오래된 박스로 엉뚱한 대상을 선택하지 않음
+    return raw, display, objects
 
-    display_frame = cv2.resize(annotated_frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
-    cv2.imshow("Drone Tracking", display_frame)
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord("q") or key == 27:  # q 또는 ESC
-        break
-cap.release()
-cv2.destroyAllWindows()
+def target_crop(channel, raw, objects):
+    target = channel.selected_id
+    if raw is None or target is None:
+        return None, ""
+    if target in objects:
+        _, (x1, y1, x2, y2) = objects[target]
+        h, w = raw.shape[:2]
+        crop = raw[max(0, y1 - 60):min(h, y2 + 60), max(0, x1 - 60):min(w, x2 + 60)]
+        if crop.size:
+            channel.last_zoom, channel.zoom_time = crop.copy(), time.time()
+            return crop, f"Selected ID:{target}"
+    if channel.last_zoom is not None and time.time() - channel.zoom_time < 5:
+        return channel.last_zoom, f"LOST ID:{target}"
+    return None, ""
+
+def shortcut_code(event):
+    code = event.key()
+    if code == 16777216:
+        return 27  # Qt Escape
+    if code in [ord(c) for c in "1234VSZMDRPOUQF"]:
+        return code + 32 if 65 <= code <= 90 else code
+    text = event.text().lower()
+    if len(text) == 1 and text in "1234vszmdrpouqf":
+        return ord(text)
+    if sys.platform == "darwin":
+        physical = {18: "1", 19: "2", 20: "3", 21: "4", 9: "v", 1: "s", 6: "z", 46: "m", 2: "d", 15: "r", 35: "p", 31: "o", 32: "u", 12: "q", 3: "f", 53: "\x1b"}
+        key = physical.get(event.nativeVirtualKey())
+        if key is not None:
+            return ord(key)  # 맥 한글 입력 상태에서도 실제 키 위치로 처리
+    return None
+
+class MainView:
+    def __init__(self, dashboard):
+        from PySide6.QtCore import Qt, QObject, QEvent
+        from PySide6.QtGui import QImage, QPixmap
+        from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QSizePolicy
+        self.QImage, self.QPixmap = QImage, QPixmap
+        owner = self
+        class Canvas(QLabel):
+            def mousePressEvent(self, event):
+                if event.button() == Qt.LeftButton:
+                    self.setFocus()
+                    dashboard.mouse(cv2.EVENT_LBUTTONDOWN, int(event.position().x()), int(event.position().y()), 0, None)
+            def mouseReleaseEvent(self, event):
+                if event.button() == Qt.LeftButton:
+                    dashboard.mouse(cv2.EVENT_LBUTTONUP, int(event.position().x()), int(event.position().y()), 0, None)
+            def mouseMoveEvent(self, event):
+                dashboard.mouse(cv2.EVENT_MOUSEMOVE, int(event.position().x()), int(event.position().y()), 0, None)
+            def mouseDoubleClickEvent(self, event):
+                if event.button() == Qt.LeftButton:
+                    dashboard.mouse(cv2.EVENT_LBUTTONDBLCLK, int(event.position().x()), int(event.position().y()), 0, None)
+        class MainWindow(QWidget):
+            def closeEvent(self, event):
+                owner.closed = True
+                event.accept()
+        self.closed = False
+        self.window = MainWindow()
+        self.window.setWindowTitle(WINDOW)
+        self.label = Canvas()
+        self.label.setMinimumSize(1, 1)
+        self.label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)  # 창을 늘려도 영상 크기가 레이아웃을 밀지 않음
+        self.label.setFocusPolicy(Qt.StrongFocus)
+        self.label.setAttribute(Qt.WA_InputMethodEnabled, False)
+        self.label.setMouseTracking(True)
+        layout = QVBoxLayout(self.window)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.label)
+        self.window.setMinimumSize(1280, 720)
+        self.window.resize(WIDTH, HEIGHT)
+        self.window.show()
+        self.label.setFocus()
+        class KeyFilter(QObject):
+            def eventFilter(self, watched, event):
+                if event.type() not in (QEvent.KeyPress, QEvent.ShortcutOverride):
+                    return False
+                if not hasattr(watched, "window"):
+                    return False
+                top = watched.window()
+                zoom = dashboard.floating_zoom
+                if top is not owner.window and (zoom is None or top is not zoom.window):
+                    return False  # 파일·주소 입력 대화상자의 키는 가로채지 않음
+                code = shortcut_code(event)
+                if code is None:
+                    return False
+                event.accept()
+                if event.type() == QEvent.KeyPress and not event.isAutoRepeat():
+                    dashboard.key_queue.append(code)
+                return True  # 자식 위젯 포커스와 관계없이 한 번만 전달
+        self.key_filter = KeyFilter(self.window)
+        dashboard.dialog_app.installEventFilter(self.key_filter)
+    def canvas_size(self):
+        return max(1, self.label.width()), max(1, self.label.height())
+    def toggle_fullscreen(self):
+        if self.window.isFullScreen():
+            self.window.showNormal()
+        else:
+            self.window.showFullScreen()
+        self.label.setFocus()
+    def is_fullscreen(self):
+        return self.window.isFullScreen()
+    def update(self, image):
+        rgb = np.ascontiguousarray(image[:, :, ::-1])
+        h, w = rgb.shape[:2]
+        qimage = self.QImage(rgb.data, w, h, rgb.strides[0], self.QImage.Format_RGB888).copy()
+        self.label.setPixmap(self.QPixmap.fromImage(qimage))
+    def close(self):
+        self.window.close()
+
+class FloatingZoom:
+    def __init__(self, app, on_key):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage, QPixmap
+        from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QSizePolicy
+        self.app, self.Qt, self.QImage, self.QPixmap = app, Qt, QImage, QPixmap
+        self.token, self.dismissed = None, False
+        owner = self
+        class ZoomWindow(QWidget):
+            def keyPressEvent(self, event):
+                code = event.key()
+                if code == Qt.Key_Escape:
+                    on_key(27)
+                elif code in [ord(c) for c in "1234VSZMDRPOUQF"]:
+                    if not event.isAutoRepeat():
+                        on_key(code + 32 if 65 <= code <= 90 else code)
+                else:
+                    super().keyPressEvent(event)
+                    return
+                event.accept()  # 확대창에서도 단축키 전달, 경고음 방지
+            def closeEvent(self, event):
+                owner.dismissed = True  # X로 닫으면 같은 영역이 자동으로 다시 열리지 않음
+                event.accept()
+        self.window = ZoomWindow()
+        self.window.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus)  # 메인 창을 눌러도 확대창이 앞에 유지
+        self.window.setAttribute(Qt.WA_ShowWithoutActivating, True)  # 확대창이 메인 창의 키보드 포커스를 가져가지 않음
+        self.window.resize(640, 360)
+        self.label = QLabel()
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setMinimumSize(1, 1)
+        self.label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)  # 영상 크기가 창을 밀어내지 않도록 설정
+        self.label.setStyleSheet("background: #121212;")
+        layout = QVBoxLayout(self.window)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addWidget(self.label)
+    def update(self, image, title, token):
+        if image is None:
+            self.window.hide()
+            self.token, self.dismissed = None, False
+            return
+        if token != self.token:
+            self.token, self.dismissed = token, False
+        if self.dismissed:
+            return
+        self.window.setWindowTitle(title)
+        if not self.window.isVisible():
+            self.window.show()
+        rgb = np.ascontiguousarray(image[:, :, ::-1])
+        h, w = rgb.shape[:2]
+        qimage = self.QImage(rgb.data, w, h, rgb.strides[0], self.QImage.Format_RGB888).copy()
+        pixmap = self.QPixmap.fromImage(qimage).scaled(self.label.size(), self.Qt.IgnoreAspectRatio, self.Qt.SmoothTransformation)
+        self.label.setPixmap(pixmap)  # 처음 트래커처럼 확대 영역 전체를 창에 꽉 채움
+    def close(self):
+        self.window.close()
+
+class Dashboard:
+    def __init__(self, channels, analyzer):
+        self.channels, self.analyzer = channels, analyzer
+        self.selected, self.layout = 0, 1
+        self.maps, self.drag_channel = {}, None
+        self.dialog_app, self.retired = None, []
+        self.floating_zoom = None
+        self.main_view = None
+        self.key_queue = deque()
+    def ensure_qt(self):
+        from PySide6.QtWidgets import QApplication
+        self.dialog_app = QApplication.instance() or QApplication([])
+        self.dialog_app.setQuitOnLastWindowClosed(False)
+        return self.dialog_app
+    def add_source(self, stream=False):
+        try:
+            from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog
+            self.ensure_qt()
+            labels = [f"Camera {i + 1}" for i in range(4)]
+            slot, ok = QInputDialog.getItem(None, "영상 위치", "영상을 넣을 화면을 선택하세요:", labels, self.selected, False)
+            if not ok:
+                return
+            index = labels.index(slot)
+            if stream:
+                source, ok = QInputDialog.getText(None, "스트림 추가", "RTSP / HTTP / YouTube 주소:")
+                if not ok:
+                    return
+                source = source.strip()
+                if not source.startswith(("rtsp://", "rtsps://", "http://", "https://")):
+                    print("RTSP / HTTP / YouTube 주소를 입력해주세요.")
+                    return
+            else:
+                source, _ = QFileDialog.getOpenFileName(None, "영상 선택", str(ROOT / "videos"), "Video (*.mp4 *.mov *.avi *.mkv *.webm *.m4v);;All files (*)")
+            if not source:
+                return
+            previous = self.channels[index]
+            previous.stop()
+            self.retired.append(previous)
+            self.channels[index] = Channel(index + 1, source, previous.show_ppe)
+            self.maps = {}
+            self.select(index)
+            print(f"Camera {index + 1}: 영상 변경 완료")
+        except ImportError:
+            print("영상 추가 창에 PySide6가 필요합니다: python -m pip install PySide6")
+    def set_layout(self, layout):
+        self.layout, self.drag_channel = layout, None
+        for c in self.channels:
+            c.drag_start = c.drag_end = None
+    def select(self, index):
+        if index >= len(self.channels):
+            return
+        self.selected, self.drag_channel = index, None
+        if self.layout == 2 and index >= 2:
+            self.set_layout(4)  # 3/4번 선택 시 선택한 영상이 화면에 보이도록 전환
+    def mouse(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN and y < HEADER:
+            if 40 <= y < 66 and WIDTH - 145 <= x < WIDTH - 10:
+                if self.main_view is not None:
+                    self.main_view.toggle_fullscreen()
+                return
+            if 5 <= y <= 35 and 950 <= x < 1095:
+                self.add_source(False)
+                return
+            if 5 <= y <= 35 and 1105 <= x < 1270:
+                self.add_source(True)
+                return
+            if y < 36:
+                for index, name in enumerate(TOOLS):
+                    if 10 + index * 105 <= x < 110 + index * 105:
+                        c = self.channels[self.selected]
+                        c.drag_start = c.drag_end = None
+                        if name == "RESET":
+                            with c.lock:
+                                c.selected_id = c.roi = c.danger = None
+                                c.last_zoom = None
+                            c.mode = "SELECT"
+                        else:
+                            c.mode = name
+                        return
+            for index, layout in enumerate((1, 2, 4)):
+                if 570 + index * 115 <= x < 680 + index * 115 and y < 36:
+                    self.set_layout(layout)
+                    return
+            return
+        index = self.drag_channel if self.drag_channel is not None else next((i for i, rect in self.maps.items() if rect[0] <= x < rect[0] + rect[2] and rect[1] <= y < rect[1] + rect[3]), None)
+        if index is None or index not in self.maps:
+            return
+        c = self.channels[index]
+        mx, my, mw, mh, fw, fh = self.maps[index]
+        point = (int(np.clip((x - mx) * fw / mw, 0, fw - 1)), int(np.clip((y - my) * fh / mh, 0, fh - 1)))
+        if event == cv2.EVENT_LBUTTONDBLCLK:
+            self.select(index)
+            self.set_layout(1)
+            return
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.select(index)
+            if not (mx <= x < mx + mw and my <= y < my + mh):
+                return
+            with c.lock:
+                if c.mode == "SELECT":
+                    objects = c.objects if time.monotonic() - c.overlay_time <= 0.7 else {}
+                    c.selected_id = next((tid for tid, (_, (x1, y1, x2, y2)) in objects.items() if x1 - 10 <= point[0] <= x2 + 10 and y1 - 10 <= point[1] <= y2 + 10), None)
+                    c.last_zoom = None
+                elif c.mode in ("ZOOM", "DANGER"):
+                    c.drag_start = c.drag_end = point
+                    self.drag_channel = index
+                elif c.mode == "MOVE" and c.roi is not None:
+                    x1, y1, x2, y2 = c.roi
+                    rw, rh = x2 - x1, y2 - y1
+                    left, top = max(0, min(point[0] - rw // 2, fw - rw)), max(0, min(point[1] - rh // 2, fh - rh))
+                    c.roi = left, top, left + rw, top + rh
+        elif event == cv2.EVENT_MOUSEMOVE and self.drag_channel is not None:
+            c.drag_end = point
+        elif event == cv2.EVENT_LBUTTONUP and self.drag_channel is not None:
+            if c.drag_start is not None:
+                x1, x2 = sorted((c.drag_start[0], point[0]))
+                y1, y2 = sorted((c.drag_start[1], point[1]))
+                if x2 - x1 > 5 and y2 - y1 > 5:
+                    with c.lock:
+                        if c.mode == "ZOOM":
+                            c.roi, c.selected_id = (x1, y1, x2, y2), None
+                        elif c.mode == "DANGER":
+                            c.danger = x1, y1, x2, y2
+            c.drag_start = c.drag_end = None
+            self.drag_channel = None
+    def zoom(self):
+        c = self.channels[self.selected]
+        raw, _, _ = live_snapshot(c)
+        with c.lock:
+            roi = c.roi
+        image = None
+        if raw is not None and roi is not None:
+            x1, y1, x2, y2 = roi
+            h, w = raw.shape[:2]
+            crop = raw[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+            if crop.size:
+                image = crop
+        if self.floating_zoom is None and image is not None:
+            self.floating_zoom = FloatingZoom(self.ensure_qt(), self.key_queue.append)
+        if self.floating_zoom is not None:
+            self.floating_zoom.update(image, f"Camera {c.number} - Area Zoom", (id(c), roi))
+    def draw(self):
+        global WIDTH, HEIGHT
+        if self.main_view is not None:
+            WIDTH, HEIGHT = self.main_view.canvas_size()  # 실제 창 크기로 매번 배치 계산
+        canvas = np.full((HEIGHT, WIDTH, 3), 22, np.uint8)
+        self.zoom()
+        view_left = 0  # 안내판 없이 영상이 창 전체 너비를 사용
+        view_width = WIDTH - view_left
+        c = self.channels[self.selected]
+        cv2.rectangle(canvas, (WIDTH - 145, 40), (WIDTH - 10, 65), (95, 75, 30), -1)
+        full_text = "WINDOW [F]" if self.main_view is not None and self.main_view.is_fullscreen() else "FULL [F]"
+        cv2.putText(canvas, full_text, (WIDTH - 136, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, getattr(cv2, "LINE_AA", 16))
+        for index, name in enumerate(TOOLS):
+            left = 10 + index * 105
+            color = (0, 150, 0) if c.mode == name else (65, 65, 65)
+            cv2.rectangle(canvas, (left, 5), (left + 100, 35), color, -1)
+            cv2.putText(canvas, name, (left + 8, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        for index, layout in enumerate((1, 2, 4)):
+            left = 570 + index * 115
+            cv2.rectangle(canvas, (left, 5), (left + 110, 35), (120, 90, 0) if self.layout == layout else (65, 65, 65), -1)
+            cv2.putText(canvas, f"{layout} VIEW", (left + 10, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        cv2.putText(canvas, f"Selected: Camera {c.number} | Tool: {c.mode}", (10, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+        for text, left, right in (("ADD FILE [O]", 950, 1095), ("ADD URL [U]", 1105, 1270)):
+            cv2.rectangle(canvas, (left, 5), (right, 35), (100, 85, 25), -1)
+            cv2.putText(canvas, text, (left + 8, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        visible = [self.selected] if self.layout == 1 else list(range(self.layout))
+        cols, rows = (1, 1) if self.layout == 1 else (2, 1) if self.layout == 2 else (2, 2)
+        cell_w, cell_h = view_width // cols, (HEIGHT - HEADER - FOOTER) // rows
+        self.maps = {}
+        for position, index in enumerate(visible):
+            left, top = view_left + (position % cols) * cell_w, HEADER + (position // cols) * cell_h
+            if index >= len(self.channels):
+                cv2.putText(canvas, f"Camera {index + 1}: No source", (left + 20, top + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (150, 150, 150), 1)
+                continue
+            channel = self.channels[index]
+            raw, image, objects = live_snapshot(channel)
+            with channel.lock:
+                danger, roi, selected = channel.danger, channel.roi, channel.selected_id
+                receiving = time.monotonic() - channel.received_at < 2
+                receive_fps = channel.receive_fps if receiving else 0.0
+                age = time.monotonic() - channel.overlay_time
+                ai_fps = channel.fps if age < 2 else 0.0
+                people, vehicles = (channel.people, channel.vehicles) if objects else (0, 0)
+                stats = f"Cam {channel.number} | P:{people} V:{vehicles} | RX:{receive_fps:.1f} AI:{ai_fps:.1f} | {channel.status}"
+            if image is None:
+                image = np.full((360, 640, 3), 25, np.uint8)
+                cv2.putText(image, f"Camera {channel.number}: {channel.status}", (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+            else:
+                image = image.copy()
+                for rect, color in ((danger, (0, 0, 255)), (roi, (255, 255, 0))):
+                    if rect is not None:
+                        cv2.rectangle(image, rect[:2], rect[2:], color, 1)
+                if selected in objects:
+                    rect = objects[selected][1]
+                    cv2.rectangle(image, rect[:2], rect[2:], (0, 255, 255), 1)
+                if channel.drag_start is not None and channel.drag_end is not None:
+                    color = (0, 0, 255) if channel.mode == "DANGER" else (255, 255, 0)
+                    cv2.rectangle(image, channel.drag_start, channel.drag_end, color, 1)
+            tile, (ox, oy, nw, nh) = fit_image(image, cell_w, cell_h - 28)
+            crop, caption = target_crop(channel, raw, objects)
+            if crop is not None and nw > 32 and nh > 32:
+                inset_scale = min(1.0, (nw - 16) / 320, (nh - 16) / 240)
+                inset_w, inset_h = max(1, round(320 * inset_scale)), max(1, round(240 * inset_scale))
+                inset = cv2.resize(crop, (inset_w, inset_h), interpolation=cv2.INTER_CUBIC)  # 원래 320×240 미리보기 방식
+                blurred = cv2.GaussianBlur(inset, (0, 0), 1.0)
+                inset = cv2.addWeighted(inset, 1.5, blurred, -0.5, 0)
+                cv2.putText(inset, caption, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+                ix, iy = ox + nw - inset_w - 8, oy + nh - inset_h - 8
+                tile[iy:iy + inset_h, ix:ix + inset_w] = inset
+                cv2.rectangle(tile, (ix, iy), (ix + inset_w - 1, iy + inset_h - 1), (0, 255, 255), 2)
+            canvas[top:top + cell_h - 28, left:left + cell_w] = tile
+            if raw is not None:
+                fh, fw = raw.shape[:2]
+                self.maps[index] = left + ox, top + oy, nw, nh, fw, fh
+            cv2.putText(canvas, stats, (left + 6, top + cell_h - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (235, 235, 235), 1)
+            cv2.rectangle(canvas, (left + 1, top + 1), (left + cell_w - 2, top + cell_h - 2), (0, 255, 180) if index == self.selected else (80, 80, 80), 2)
+        message = ""  # 단축키 목록은 화면에서 숨겨 깔끔하게 유지
+        if self.analyzer.error:
+            message = "AI ERROR - See terminal: " + self.analyzer.error[:100]
+        cv2.putText(canvas, message, (10, HEIGHT - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
+        if self.main_view is None:
+            self.ensure_qt()
+            self.main_view = MainView(self)
+        self.main_view.update(canvas)
+        if self.dialog_app is not None:
+            self.dialog_app.processEvents()  # 별도 확대창 이동·크기 조절·닫기 처리
+
+def main():
+    parser = argparse.ArgumentParser(description="기존 드론 트래커: 최대 4개 영상 독립 추적")
+    parser.add_argument("sources", nargs="*", help="영상 파일, RTSP/HTTP/YouTube 주소 또는 카메라 번호 (최대 4개)")
+    parser.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--no-ppe", action="store_true", help="PPE 검사 끄기 (원거리 영상용, P키로 개별 전환)")
+    args = parser.parse_args()
+    sources = args.sources or ["https://www.youtube.com/watch?v=C3hW1VrwmNc"]
+    if not 1 <= len(sources) <= 4:
+        parser.error("영상은 1~4개까지 지정해주세요.")
+    needed = ["yolo11s.pt", "yolo11n-pose.pt", "ppe_best.pt"]
+    for name in needed:
+        if not (ROOT / "models" / name).is_file():
+            parser.error(f"모델 파일 없음: {ROOT / 'models' / name}")
+    channels = [Channel(i + 1, sources[i] if i < len(sources) else "", not args.no_ppe) for i in range(4)]
+    analyzer = Analyzer(channels, args.device)
+    dashboard = Dashboard(channels, analyzer)
+    analyzer.start()
+    dashboard.ensure_qt()
+    dashboard.main_view = MainView(dashboard)  # 메인·확대 창 모두 Qt로 키 입력 통일
+    try:
+        while True:
+            dashboard.draw()
+            key = dashboard.key_queue.popleft() if dashboard.key_queue else -1
+            if 65 <= key <= 90:
+                key += 32  # 대문자 입력도 동일한 단축키로 처리
+            if key == 27 and dashboard.main_view.is_fullscreen():
+                dashboard.main_view.toggle_fullscreen()
+                continue
+            if key in (ord("q"), 27):
+                break
+            if key == ord("f"):
+                dashboard.main_view.toggle_fullscreen()
+            if ord("1") <= key <= ord("4"):
+                dashboard.select(key - ord("1"))
+            elif key == ord("v"):
+                dashboard.set_layout({1: 2, 2: 4, 4: 1}[dashboard.layout])
+            elif key in map(ord, "szmdr"):
+                name = dict(zip(map(ord, "szmdr"), ("SELECT", "ZOOM", "MOVE", "DANGER", "RESET")))[key]
+                dashboard.mouse(cv2.EVENT_LBUTTONDOWN, 15 + TOOLS.index(name) * 105, 10, 0, None)
+            elif key == ord("o"):
+                dashboard.add_source(False)
+            elif key == ord("u"):
+                dashboard.add_source(True)
+            elif key == ord("p"):
+                c = channels[dashboard.selected]
+                c.show_ppe = not c.show_ppe
+                if not c.show_ppe:
+                    c.hardhat_until = c.vest_until = 0
+            if dashboard.main_view.closed:
+                break
+            time.sleep(0.015)  # Qt 이벤트는 draw에서 처리, OpenCV waitKey 사용하지 않음
+    finally:
+        analyzer.stop_event.set()
+        for c in channels + dashboard.retired:
+            c.stop()
+        analyzer.join()  # MPS 추론 종료 후 프로그램 종료
+        for c in channels + dashboard.retired:
+            if c.reader is not None:
+                c.reader.join(timeout=0.2)
+        if dashboard.floating_zoom is not None:
+            dashboard.floating_zoom.close()
+        if dashboard.main_view is not None:
+            dashboard.main_view.close()
+
+if __name__ == "__main__":
+    main()
