@@ -1,0 +1,26 @@
+{
+  "event_id": "20261012_172811_644",
+  "event": "CROWD",
+  "time": "2026-10-12 17:28:11",
+  "camera": 2,
+  "track_id": null,
+  "confidence": 1.0,
+  "telemetry": {
+    "battery": 100.0,
+    "lat": null,
+    "lon": null,
+    "home_lat": null,
+    "home_lon": null,
+    "flight_mode": "PATROL",
+    "rth_requested": false
+  },
+  "snapshot": "/Users/thisiszero1/Desktop/UTM-Transfer/linux-study/data/events/camera_2/CROWD/20261012_172811_644/snapshot.jpg",
+  "video": "/Users/thisiszero1/Desktop/UTM-Transfer/linux-study/data/events/camera_2/CROWD/20261012_172811_644/event.mp4",
+  "details": {
+    "people": 12,
+    "danger_people": 0,
+    "risk": "MEDIUM"
+  },
+  "transmission_status": "LOCAL_QUEUE",
+  "metadata_note": "이 JSON은 이벤트 종류/시간/GPS/배터리/신뢰도 등 상황 정보를 저장합니다."
+}

@@ -1,0 +1,26 @@
+{
+  "event_id": "20261012_172822_150",
+  "event": "NO_VEST",
+  "time": "2026-10-12 17:28:22",
+  "camera": 2,
+  "track_id": 2,
+  "confidence": 1.0,
+  "telemetry": {
+    "battery": 100.0,
+    "lat": null,
+    "lon": null,
+    "home_lat": null,
+    "home_lon": null,
+    "flight_mode": "PATROL",
+    "rth_requested": false
+  },
+  "snapshot": "/Users/thisiszero1/Desktop/UTM-Transfer/linux-study/data/events/camera_2/NO_VEST/20261012_172822_150/snapshot.jpg",
+  "video": null,
+  "details": {
+    "site_mode": "ON",
+    "inside_danger_zone": false,
+    "confirmed_hits": 3
+  },
+  "transmission_status": "LOCAL_QUEUE",
+  "metadata_note": "이 JSON은 이벤트 종류/시간/GPS/배터리/신뢰도 등 상황 정보를 저장합니다."
+}
