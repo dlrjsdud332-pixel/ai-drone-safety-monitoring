@@ -2,8 +2,62 @@ __pycache__/
 *.pyc
 .DS_Store
 .vscode/
+drone_vscode_run_settings/
 runs/
 ppe_dataset/
 videos/
 yolo11n/
 yolo11n (2)/
+
+# Local Python environments and tool state
+.venv/
+venv/
+env/
+.conda/
+.pixi/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.codex/
+.agents/
+.aws/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Private captures, events, reviewer identity, diagnostic output and backups
+diagnostics/
+data/
+reports/
+*.log
+*.tmp
+*.bak
+*.before
+*.backup.*
+legacy/drone_tracker_backup.py
+
+# Weights and recordings stay local; distribution rights require review
+*.pt
+*.onnx
+*.engine
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.ppm
+*.webarchive
+
+# Downloaded external meshes/textures: keep recipes and attribution, not binaries
+tools/gazebo/industrial/models/industrial_worker/meshes/
+tools/gazebo/industrial/models/industrial_materials/materials/textures/
+
+# Keep existing report source modules; generated reports remain private.
+!reports/
+reports/*
+!reports/danger_report.py
+!reports/fall_report.py
+!reports/ppe_report.py

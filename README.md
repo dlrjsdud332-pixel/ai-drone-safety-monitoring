@@ -1,216 +1,115 @@
-# AI 기반 실시간 드론 안전 관제 시스템
+# AI Drone Safety Monitoring — 개발 프로토타입 v0.1
 
-Python과 YOLO를 활용해 영상 속 사람과 차량을 탐지하고, 안전 위험을 확인하는 데스크톱 관제 프로젝트입니다. 초기 OpenCV 프로그램에서 구현한 탐지·추적·보호구 검사·넘어짐 감지 기능을 바탕으로, PySide6 UI와 영상 처리 모듈을 구성했습니다.
+macOS Apple Silicon용 PySide6 관제 프로그램입니다. 현재 유지하는 메인 프로그램은 **`legacy/drone_tracker.py`**입니다. 사람·차량 YOLO/ByteTrack, PPE·자세 추정, FIRE·SMOKE 경고, 이벤트 JSON/스냅샷, PX4 텔레메트리 및 미션 상태 표시를 포함합니다. 루트의 `main.py`와 `drone_tracker.py`는 다른 실행 경로이므로 아래 명령과 혼용하지 마세요. 루트 `drone_tracker.py`는 기존 독립 실행 코드를 그대로 보존했으며, 0바이트 업로드 후보로 덮어쓰지 않았습니다.
 
-관제자는 최대 네 개의 영상을 함께 보면서 조작할 화면을 선택할 수 있습니다. 선택한 영상의 재생 위치를 이동하고, 특정 대상이나 영역을 확대하거나, 여러 다각형 구역에 주의·경고·위험 등급을 지정할 수 있습니다. 감지된 안전 이벤트는 화면과 CSV에 기록됩니다.
+## v0.1 범위와 한계
 
-현재는 로컬 영상과 YouTube 실시간 영상을 이용해 기능을 확인했습니다. 실제 DJI Mavic 3 Classic의 실시간 영상 연동은 향후 개발 목표입니다.
+기존 YOLO·ByteTrack·CROWD·FIRE·SMOKE 운영 설정을 유지한 개발 프로토타입입니다. 추가 AI 성능 실험은 종료했으며, 실제 산업현장 성능 인증이나 안전 보장을 의미하지 않습니다. 기존 UI와 PX4·Gazebo 연동 코드는 보존합니다.
 
-## 실행 화면
+- 군중 밀집 영역·NORMAL/CAUTION/HIGH 분석은 `tools/ai/crowd_regions.py`의 **실험 기능**이며 운영 경고에 통합하지 않았습니다. 원거리 사람 고해상도·타일 추론도 미적용입니다.
+- 원거리/주간 화재 HSV·ROI 재탐지는 일부 부분 영역 추가 검출이 있었으나 실시간 비용과 검증 데이터 한계로 **운영 미적용**입니다.
+- 사용자 검수 JSON이 없어 화재 30프레임의 정식 정확도 평가는 미완료입니다.
+- 산업현장 실험 테스트에는 **실패 1건·오류 1건**이 남아 있습니다. [검증 보고서](docs/VALIDATION_REPORT.md)를 확인하세요.
+- 모델·영상·이벤트·제3자 다운로드 에셋은 새 업로드 묶음에서 제외합니다. 기존 원격에서 이미 추적 중인 파일은 별도 검토 대상입니다.
 
-![4분할 관제 UI 구성](docs/images/main_screen.png)
+## 설치
 
-왼쪽에는 영상 라이브러리와 스트림 연결, 가운데에는 선택 가능한 관제 화면과 재생 도구, 오른쪽에는 확대 화면과 이벤트 기록을 배치했습니다. 위 이미지는 4분할 화면의 초기 배치입니다.
+검사에 사용한 환경은 Python 3.10.21 / macOS Apple Silicon입니다. 기존 환경에서 테스트했으며 새 환경 설치는 미검증입니다.
 
-## 주요 기능
+```sh
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-macos-tested.txt
+# 실시간 스트림 주소 처리에는 ffmpeg가 필요합니다.
+brew install ffmpeg
+```
 
-| 기능 | 설명 |
+`requirements.txt`는 일반 의존성 목록, `requirements-macos-tested.txt`는 확인한 환경의 직접 의존성 버전입니다. Gazebo Transport는 이 pip 환경에 섞지 않고 기존 PX4 macOS Pixi Python에서 별도 worker로 실행합니다.
+
+필요한 모델은 사용 권한을 확인한 뒤 `models/`에 배치합니다. 가중치 파일과 테스트 영상은 기본 Git 업로드 대상에서 제외됩니다.
+
+| 파일 | 역할 |
 |---|---|
-| 화면 분할 | 1화면·2분할·4분할 전환 |
-| 조작 화면 선택 | 영상 클릭으로 조작할 화면 선택, 테두리로 선택 상태 표시 |
-| 크게 보기 | 조작 모드가 꺼진 상태에서 더블클릭하면 해당 영상만 크게 표시 |
-| 영상 라이브러리 | 로컬 영상 추가 및 선택한 화면으로 불러오기 |
-| 재생 제어 | 선택한 영상의 재생·일시정지·정지 |
-| 시간 이동 | 로컬 영상의 슬라이더 조작 또는 `분:초` 직접 입력 |
-| 객체 탐지·추적 | 사람·자동차·오토바이·버스·트럭 탐지와 추적 ID 표시 |
-| 대상 확대 | 감지된 대상을 클릭해 오른쪽 확대 화면에서 확인 |
-| 영역 확대 | 마우스로 드래그한 영역 확대 |
-| 확대 화면 자동 맞춤 | 선택 영역과 주변 영상을 확대칸 비율에 맞춰 표시, 대상 비율 유지 |
-| 다각형 구역 | 세 개 이상의 점으로 여러 구역 생성, 꼭짓점 이동·선택 구역 삭제 |
-| 구역 등급 | 주의·경고·위험을 색상과 반투명 영역으로 구분 |
-| 구역 진입 감지 | 사람 박스의 하단 중앙을 기준으로 다각형 내부 진입 판정 |
-| 보호구 검사 | 안전모·안전조끼 미착용 감지 |
-| 넘어짐 의심 감지 | 자세 추정 모델을 이용한 넘어짐 의심 판단 |
-| 상태 표시 | 선택 영상의 사람 수·차량 수·AI 처리 FPS, 재생 상태 및 안전 등급 표시 |
-| 이벤트 기록 | 감지 시간·추적 ID 등을 화면 이벤트 목록과 CSV에 저장 |
+| `yolo11s.pt` | 사람·차량 / ByteTrack |
+| `yolo11n-pose.pt` | 자세 추정 |
+| `ppe_best.pt` | 안전모·안전조끼 |
+| `fire_smoke_best.pt` | smoke=0 / fire=1 |
 
-### 화면별 지원 범위
+PPE 및 화재 가중치의 원 학습 데이터/배포 허가는 아직 확인되지 않았습니다. 임의 가중치 교체나 자동 다운로드는 하지 않습니다. [라이선스 검토](docs/LICENSE_REVIEW.md)를 참고하세요.
 
-| 기능 | 1번 화면 | 2~4번 화면 |
-|---|:---:|:---:|
-| 로컬 영상 재생·시간 이동 | 지원 | 지원 |
-| 사람·차량 탐지 및 대상 선택 | 지원 | 지원 |
-| 대상·영역 확대 | 지원 | 지원 |
-| 여러 다각형 구역 및 진입 기록 | 지원 | 지원 |
-| 실시간 스트림 연결 | 지원 | 미지원 |
-| 보호구 미착용·넘어짐 의심 감지 | 지원 | 미지원 |
+## 파일 영상 실행
 
-하단 **사람 / 차량 / FPS**는 선택한 영상의 값입니다. 사람·차량 수는 현재 탐지 결과의 개수이며 누적 출입 인원이나 통행량이 아닙니다. FPS는 AI 처리 속도 지표로, 원본 영상의 프레임 속도와 다를 수 있습니다. 오른쪽 이벤트 목록에는 여러 화면의 구역 진입과 1번 화면의 보호구·넘어짐 이벤트가 모입니다.
-
-## 사용 기술
-
-- **Python / PySide6**: 데스크톱 UI, 신호·슬롯, 백그라운드 작업
-- **OpenCV / NumPy**: 영상 읽기, 프레임 처리, 확대 영역 계산
-- **Ultralytics YOLO11 / ByteTrack**: 객체 탐지와 추적 ID 관리
-- **PyTorch / Apple MPS**: Apple Silicon GPU에서 모델 추론
-- **YOLO11 Pose**: 사람의 자세 분석
-- **Custom PPE Model**: 안전모·안전조끼 미착용 검사
-- **yt-dlp**: YouTube 영상의 재생 주소 추출
-- **CSV / Matplotlib**: 이벤트 저장과 별도 통계 보고서
-
-## 모델 구성
-
-| 모델 파일 | 용도 |
-|---|---|
-| `models/yolo11s.pt` | 사람·차량 탐지 및 추적 |
-| `models/yolo11n-pose.pt` | 넘어짐 의심 판단용 자세 추정 |
-| `models/ppe_best.pt` | 안전모·안전조끼 착용 검사 |
-| `models/yolo11n.pt` | 기존 경량 객체 탐지 실험용 모델 |
-
-PPE 모델 클래스는 `Hardhat`, `NO-Hardhat`, `NO-Safety Vest`, `Person`, `Safety Vest`입니다. 미착용 기록은 `NO_HARDHAT`, `NO_SAFETY_VEST`로 저장합니다.
-
-## 파일 구성
-
-프로젝트 폴더의 주요 파일은 다음과 같습니다.
-
-```text
-linux-study/
-├── main.py                     # 현재 UI 실행 진입점 및 화면 제어
-├── ai_tracker.py               # 사람·차량 탐지와 추적
-├── ai_worker.py                # 1번 화면 AI 분석 작업
-├── ppe_detector.py             # 보호구 미착용 검사
-├── fall_detector.py            # 넘어짐 의심 감지
-├── stream_resolver.py          # YouTube 재생 주소 추출
-├── stream_capture.py           # 백그라운드 스트림 읽기
-├── drone_tracker.py            # 초기 OpenCV 버전, 별도 실행용
-├── models/
-│   ├── yolo11s.pt
-│   ├── yolo11n.pt
-│   ├── yolo11n-pose.pt
-│   └── ppe_best.pt
-├── data/
-│   ├── ui_zone_events.csv      # 현재 UI의 다각형 구역 진입 기록
-│   ├── danger_events.csv       # 초기 OpenCV 버전의 위험구역 기록
-│   ├── fall_events.csv         # 넘어짐 의심 기록
-│   └── ppe_events.csv          # 보호구 미착용 기록
-├── reports/
-│   ├── danger_report.py
-│   ├── fall_report.py
-│   └── ppe_report.py
-├── videos/                     # 사용자가 준비하는 테스트 영상
-├── docs/
-│   └── images/
-│       └── main_screen.png     # README 실행 화면
-├── requirements.txt
-└── README.md
+```sh
+python legacy/drone_tracker.py /path/to/local-video.mp4 --device cpu --flight-adapter SIM
 ```
 
-현재 UI는 `main.py`에서 각 분석 모듈을 불러옵니다. `drone_tracker.py`를 동시에 실행하거나 직접 불러오는 구조는 아니며, 초기 버전의 구현과 실험 이력을 보관하는 파일입니다.
+파일 입력을 유지합니다. 지원 장치에서는 `--device mps`를 사용할 수 있으나 이번 검사에서는 CPU만 확인했습니다. O: 로컬 영상, U: 스트림, P: PPE, H: FIRE/SMOKE 표시, Q: 종료입니다. 이벤트는 `data/events/`, 큐는 `data/transmission_queue/`, RISK 기록은 `data/alerts/`에 저장됩니다. 이 디렉터리에는 촬영·위치·검수 정보가 포함될 수 있어 Git에서 제외합니다.
 
-## 설치 및 실행
+## 기존 X500 / Gazebo 연동
 
-### 1. 가상환경 준비
+기존 PX4 소스와 정상 빌드, Gazebo Sim 8/Pixi 환경, QGroundControl을 별도로 준비해야 합니다. 이 저장소에 PX4 본체는 포함하지 않습니다. 기존 OGRE2 Metal 설정을 보존했습니다. 각 터미널에서 같은 partition을 사용하고 중복 서버를 실행하지 마세요.
 
-새 환경을 만들 때:
-
-```bash
-conda create -n vision-ai python=3.11 -y
-conda activate vision-ai
+```sh
+export PX4_SOURCE_DIR="$HOME/Desktop/PX4-Autopilot"
+export GZ_PARTITION=safety_x500_camera
+export GAZEBO_PYTHON="$PX4_SOURCE_DIR/Tools/setup/macos/.pixi/envs/default/bin/python"
+# 터미널 A
+zsh tools/gazebo/run_x500_camera.sh
+# 터미널 B: 같은 환경변수 설정 후
+zsh tools/gazebo/run_x500_sitl.sh
+# 터미널 C: 먼저 실제 프레임 수신 검사
+python tools/gazebo/verify_x500_camera.py --count 10 --timeout 20
 ```
 
-이미 환경이 있으면 `conda activate vision-ai`만 실행합니다. 프로젝트 최상위 폴더에서 아래 명령을 실행합니다.
+검사 후 실제 토픽이 확인된 경우 관제 프로그램에 연결합니다.
 
-### 2. 라이브러리 설치
-
-```bash
-python -m pip install -r requirements.txt
-python -m pip install PySide6
+```sh
+python legacy/drone_tracker.py   gazebo:///world/x500_camera/model/x500_mono_cam_0/link/camera_link/sensor/camera/image   --flight-adapter PX4 --device cpu
 ```
 
-필요한 주요 패키지는 `ultralytics`, `opencv-python`, `numpy`, `torch`, `PySide6`, `yt-dlp`, `matplotlib`입니다. `requirements.txt`에 PySide6가 포함되어 있다면 두 번째 명령은 생략할 수 있습니다.
+검증된 테스트 카메라는 `gazebo:///safety/probe/image`입니다. 자세한 환경 설정은 [Gazebo 문서](tools/gazebo/README.md)를 참고하세요. 이번 업로드 준비 세션의 실제 비행/QGC GUI/미션 진행률 재검증은 완료되지 않았습니다.
 
-현재 GPU 설정은 macOS Apple Silicon의 `mps` 기준입니다. Windows·Linux 또는 CPU 실행은 분석 모듈의 장치 설정을 환경에 맞게 수정해야 합니다. 각 모델 파일을 `models/`에 준비합니다.
+## 오프라인 테스트
 
-### 3. UI 실행
-
-```bash
-python main.py
+```sh
+python test_agent_safety.py
+python tools/ai/test_alarm_logic.py
+python tools/ai/test_fire_dataset.py
+python tools/ai/test_fire_review.py
+# Gazebo 패키지가 있는 전용 환경에서:
+"$GAZEBO_PYTHON" -m unittest discover -s tools/gazebo -p 'test_*.py'
 ```
 
-UI가 열리면 **+ 영상 추가**로 로컬 영상을 등록합니다. 영상 칸을 클릭한 뒤 라이브러리에서 파일을 선택하면 해당 칸에 불러옵니다. **선택한 화면에 영상 열기** 버튼으로도 파일을 열 수 있습니다.
+관제 UI를 화면 없이 검사하려면 별도의 새 출력 폴더를 사용합니다. offscreen 성공을 실제 macOS 창/비행 성공으로 간주하지 않습니다.
 
-실시간 연결은 왼쪽 입력칸에 지원되는 스트림 주소 또는 YouTube 주소를 입력하고 **연결하기**를 누릅니다. 실시간 영상은 1번 화면에서 열리며 시간 이동 입력은 비활성화됩니다. 영상 제공 상태와 네트워크에 따라 연결이 실패하거나 끊길 수 있습니다.
-
-### 4. 통계 보고서 실행
-
-```bash
-python reports/fall_report.py
-python reports/danger_report.py
-python reports/ppe_report.py
+```sh
+python tools/ai/validate_gui.py --offscreen --output diagnostics/gui_new   --seconds 40 /path/to/local-video.mp4
 ```
 
-기존 `danger_report.py`는 `data/danger_events.csv`를 집계합니다. 현재 UI의 구역 기록은 `data/ui_zone_events.csv`에 저장되므로, 새 구역 통계를 만들려면 보고서의 입력 경로와 집계 항목을 수정해야 합니다.
+## 화재·연기 사용자 검수와 기준 평가
 
-## 화면 조작 방법
+검수 후보 30프레임과 원본 영상/JSON은 개인정보·출처 검토 때문에 업로드하지 않습니다. 로컬 검수 도구는 낮 화재 10프레임부터 자동 FIRE/SMOKE 후보와 부분 초안을 편집하게 하며, 사용자 완료 프레임만 평가에 사용합니다. 저장된 HTML 페이지는 검수 결과 JSON을 대체할 수 없습니다.
 
-| 조작 | 동작 |
-|---|---|
-| 영상 칸 클릭 | 해당 영상을 조작 화면으로 선택 |
-| 영상 칸 더블클릭 | 대상·확대·구역 조작 모드가 모두 꺼진 상태에서 한 화면으로 크게 보기 |
-| 크게 보기에서 `Esc` | 기존 분할 화면으로 돌아가기 |
-| **재생 / 일시정지 / 정지** | 선택한 영상 제어 |
-| 하단 시간 막대 드래그 | 선택한 로컬 영상의 재생 위치 이동 |
-| 현재 시간 클릭 → `분:초` 입력 → `Enter` | 입력한 시간으로 이동 |
-| 시간 입력 중 `Esc` | 시간 입력 취소 |
-| **SELECT · 대상 선택** → 감지된 객체 클릭 | 대상 ID를 선택하고 확대 |
-| **확대 영역 선택** → 영상 위 드래그 | 선택한 영역을 오른쪽에서 확대 |
-| 등급 선택 → **+ 구역 추가** → 영상 위 점 찍기 | 다각형 구역 작성 |
-| 구역 작성 중 `Enter` 또는 `Space` | 점이 세 개 이상이면 구역 완성 |
-| 구역 작성 중 `Esc` | 작성 중인 점 취소, 완성된 구역은 유지 |
-| 구역 편집 모드에서 꼭짓점 드래그 | 구역 모양 수정 |
-| 구역 편집 모드에서 꼭짓점 클릭 → `Delete` 또는 `Backspace` | 선택한 완성 구역 삭제 |
-| 창 닫기 버튼 | 프로그램 종료 |
+사용자 완료 JSON을 확보하지 못했으며 검수 및 성능 실험은 보류·종료 상태입니다. 따라서 **30프레임 기준 정확도 평가, 낮/석양/야간 미탐지율·오탐률은 미완료**입니다. 기존 미검수 라벨을 정답으로 확정하지 않았습니다.
 
-구역 등급은 **주의: 노란색 / 경고: 주황색 / 위험: 빨간색**으로 표시합니다. 선택한 등급은 새로 만드는 구역에 적용됩니다. 영상 칸마다 구역을 따로 관리하며, 구역 설정을 파일에 저장해 다음 실행에서 복원하는 기능은 현재 포함하지 않습니다.
+실제 검수 JSON을 확보한 뒤 로컬 데이터셋에서:
 
-확대 화면은 대상이나 선택 영역 전체를 포함하도록 주변 영상까지 넓혀 표시합니다. 원본 영상 경계 때문에 확대칸 비율에 맞출 수 없는 경우에는 일부 여백이 남을 수 있습니다. 확대는 원본 해상도의 영향을 받으며, 원거리 대상의 세부 정보를 새로 복원하지는 않습니다.
+```sh
+python tools/ai/prepare_fire_review.py import --dataset diagnostics/fire_dataset_v1   --review-json /path/to/fire_smoke_human_review.json
+python tools/ai/prepare_fire_review.py evaluate --dataset diagnostics/fire_dataset_v1
+```
 
-## 이벤트 기록
+반자동 후보/화면 재생성에는 로컬 원본 데이터와 manifest가 필요합니다. 업로드된 소스만으로 비공개 검수 자료가 자동 복원되지는 않습니다. 학습 명령은 실행하지 않았습니다.
 
-CSV는 프로젝트의 `data/` 폴더에 생성되고 기존 파일 뒤에 기록을 추가합니다.
+이번 검사 결과와 미완료 항목은 [최종 검증 보고서](docs/VALIDATION_REPORT.md), 업로드 대상/제외 정책은 [업로드 준비 보고서](docs/UPLOAD_REVIEW.md)에 기록합니다. 기존 이력을 보존한 clone의 `release/prototype-v0.1` 브랜치에 후보 99개 중 98개를 반영했습니다. HEAD 대비 추가 84개·수정 4개·동일 후보 10개이며 루트 `drone_tracker.py` 후보 1개는 보류했습니다. 문서 후속 수정도 이 집계 안에 포함됩니다. stage·commit·push는 실행하지 않았습니다. 준비 후보와 실제 반영 범위는 [파일 목록](docs/UPLOAD_FILES.md)에 정리했습니다. 원격 이력 보존 절차와 승인 전 남은 항목은 [업로드 준비 보고서](docs/UPLOAD_REVIEW.md)를 확인하세요.
 
-| CSV 파일 | 주요 열 | 기록 내용 |
-|---|---|---|
-| `ui_zone_events.csv` | `time`, `track_id`, `zone_number`, `level` | UI 다각형 구역 진입 |
-| `fall_events.csv` | `time`, `track_id` | 넘어짐 의심 |
-| `ppe_events.csv` | `time`, `track_id`, `missing_item` | 보호구 미착용 |
-| `danger_events.csv` | `time`, `track_id` | 초기 OpenCV 버전의 위험구역 진입 |
+## v0.1 핵심 오프라인 회귀 검사
 
-- 같은 ID와 위험 유형·구역의 반복 기록을 줄이기 위해 **10초 간격 제한**을 적용합니다. 구역 진입은 이전 분석에서 구역 밖에 있던 대상의 진입을 기준으로 기록합니다.
-- 보호구·넘어짐의 상단 경고 표시는 **마지막 감지 후 4초** 유지합니다. 반복 감지되면 유지 시간이 갱신됩니다. CSV 기록 간격과 별개의 설정입니다.
-- 구역 침입 상태는 분석 결과에 따라 갱신되며, 여러 구역 중 가장 높은 등급을 상단에 표시합니다.
-- 이벤트 목록에는 최신 기록을 위에 표시하고 최대 200개를 유지합니다. 화면에서 오래된 기록이 제외되어도 CSV 기록은 남습니다.
-- 화면의 구역 이벤트 문구에는 영상 번호가 표시되지만, 현재 `ui_zone_events.csv`에는 영상 번호 열이 없습니다. 서로 다른 영상에서 같은 추적 ID·구역 번호가 나올 수 있어 영상별 통계에는 열 추가가 필요합니다.
+```sh
+python tools/release/check_prototype.py \
+  --gazebo-python "$GAZEBO_PYTHON" \
+  --output diagnostics/prototype_checks_new
+python tools/release/audit_upload.py --output diagnostics/upload_audit_new
+```
 
-## 처리 흐름과 개선 과정
-
-1. 로컬 영상은 OpenCV로 읽고, YouTube 주소는 별도 작업에서 재생 주소를 추출한 뒤 스트림을 읽습니다.
-2. AI 분석은 작업 스레드에서 수행하고, 최신 프레임을 전달해 오래된 분석 요청의 누적을 줄입니다.
-3. YOLO와 ByteTrack의 탐지·추적 결과를 화면에 표시하고 대상 선택에 사용합니다. 1번 화면에서는 보호구·자세 분석도 수행합니다.
-4. 각 영상의 발 위치를 해당 영상에 설정한 다각형과 비교해 구역 진입을 판정합니다.
-5. 선택한 영상의 통계와 확대 화면을 갱신하고, 안전 이벤트를 목록과 CSV에 기록합니다.
-
-초기 버전의 사각형 위험구역을 여러 다각형 구역으로 확장했고, UI와 AI 작업을 분리해 화면 조작을 개선했습니다. 분할 영상의 조작 대상을 하나로 통일해 재생·시간 이동·대상 선택·구역 설정이 선택한 화면에 적용되도록 구성했습니다.
-
-Apple MPS에서 여러 모델이 동시에 추론할 때 발생한 충돌에는 GPU 작업을 순서대로 실행하는 방식으로 대응했습니다. 확대 화면은 원본 프레임과 선택 좌표를 보관하고 창 크기에 맞춰 다시 그리도록 개선해, 확대 영상과 이벤트 목록의 겹침을 해결했습니다.
-
-## 현재 한계와 향후 계획
-
-- 2~4번 화면에도 보호구·넘어짐 검사와 실시간 연결 지원 확대
-- 구역 설정 저장·복원 및 영상별 CSV 식별 정보 추가
-- UI 구역 기록을 이용한 통계 보고서 연결
-- 원거리·가림·저조도 영상의 탐지 정확도와 여러 영상의 처리 속도 개선
-- 기능별 UI 코드 분리 및 재생·분석 상태 관리 정리
-- 실제 드론 촬영 영상 연동과 산업 현장 조건에서의 검증
-
-현재 결과는 테스트 영상에서 확인한 프로토타입입니다. 넘어짐 결과는 의심 이벤트이며 실제 사고 확정이 아닙니다. 실제 운영에 필요한 탐지 정확도·지연 시간·오탐률의 정량 평가는 별도 과제로 남아 있습니다.
+검사 도구는 기존 단위 테스트만 실행하며 추가 추론 성능 실험·모델 학습·비행·Git push를 실행하지 않습니다. 알려진 산업현장 실패/오류가 포함되므로 전체 테스트 명령은 종료 코드 1을 반환합니다. AI용 Python과 Gazebo 전용 Python이 모두 필요합니다.

@@ -1,0 +1,10 @@
+CC0 1.0 Universal — original industrial scene assets
+
+To the extent possible under law, the author dedicates the original generated
+industrial building/fence/ground geometry and analytic particle masks in this
+directory to the public domain under CC0 1.0 Universal.
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Third-party worker and concrete textures retain their original CC0 dedications
+as documented in assets.json and ASSET_REVIEW.md. They are not authored here.
+The original X500/PX4 assets and existing code retain their own licenses.

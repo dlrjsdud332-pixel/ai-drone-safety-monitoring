@@ -2,3 +2,8 @@ ultralytics
 opencv-python
 yt-dlp
 matplotlib
+numpy<2
+torch
+torchvision
+PySide6
+pymavlink

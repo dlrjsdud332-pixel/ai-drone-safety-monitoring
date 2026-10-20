@@ -1,0 +1,21 @@
+{
+  "worker": {
+    "title": "Drew construction worker with hard hat and hi-vis",
+    "author": "Innerscene, adapted from MakeHuman/MPFB CC0 assets",
+    "license": "CC0-1.0",
+    "source": "https://www.innerscene.com/tools/library/3d-parts/drew-3d-person-construction-worker-with-hard-hat-and-hi-vis-a4aa98af",
+    "terms": "https://www.innerscene.com/tools/library/terms",
+    "url": "https://www.innerscene.com/api/library/drew-3d-person-construction-worker-with-hard-hat-and-hi-vis-a4aa98af/download",
+    "path": "models/industrial_worker/meshes/worker.glb"
+  },
+  "concrete": {
+    "title": "Concrete Floor Worn 001",
+    "author": "Dimitrios Savva / Rico Cilliers, Poly Haven",
+    "license": "CC0-1.0",
+    "source": "https://polyhaven.com/a/concrete_floor_worn_001",
+    "terms": "https://polyhaven.com/license",
+    "api": "https://api.polyhaven.com/files/concrete_floor_worn_001",
+    "resolution": "1k",
+    "maps": {"Diffuse": "concrete_diff.jpg", "nor_gl": "concrete_normal.jpg", "rough": "concrete_rough.jpg"}
+  }
+}

@@ -3,6 +3,7 @@ import argparse
 import csv
 import json
 import shutil
+import socket
 import sys
 import subprocess
 import threading
@@ -16,8 +17,11 @@ from ultralytics import YOLO
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent if HERE.name == "legacy" else HERE  # legacy 안에서도 기존 models/data 사용
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 WINDOW = "Drone Tracking"
-WIDTH, HEIGHT, HEADER, FOOTER = 1440, 810, 70, 54
+WIDTH, HEIGHT, HEADER, FOOTER = 1440, 810, 70, 75
 TOOLS = ("SELECT", "ZOOM", "MOVE", "RESET", "DANGER")
 VEHICLES = (2, 3, 5, 7)
 MAX_CAMERAS = 16
@@ -146,9 +150,22 @@ class TelemetryState:
         self.returning_home_at = None
         self.altitude_m = None
         self.heading_deg = None
+        self.armed = None
+        # PX4 MAVLink mission progress, separate from the Agent's simulated missions.
+        self.px4_mission_seq = None
+        self.px4_mission_total = None
+        self.px4_mission_reached = None
+        self.px4_mission_state = "UNKNOWN"
+        # MAVLink mission-item completion is independent of RTL/landing.
+        self.px4_mission_items_complete = False
+        self.px4_mission_updated_at = None
         self.telemetry_source = "SIM"
         self.telemetry_connected = True
+        # Do not raise a link-loss alarm before receiving the first real PX4/UDP packet.
+        self.telemetry_ever_connected = False
         self.telemetry_last_update = time.monotonic()
+        self.last_received_command = None
+        self.last_command_id = None
 
     def sim_heartbeat(self):
         """SIM 모드에서는 수동 입력이 없어도 텔레메트리가 살아있는 것으로 유지."""
@@ -169,9 +186,20 @@ class TelemetryState:
                 "rth_requested": self.rth_requested,
                 "altitude_m": self.altitude_m,
                 "heading_deg": self.heading_deg,
+                "armed": self.armed,
+                "px4_mission_seq": self.px4_mission_seq,
+                "px4_mission_total": self.px4_mission_total,
+                "px4_mission_reached": self.px4_mission_reached,
+                "px4_mission_state": self.px4_mission_state,
+                "px4_mission_items_complete": self.px4_mission_items_complete,
+                "px4_mission_age_s": (round(max(0., time.monotonic() - self.px4_mission_updated_at), 1)
+                                     if self.px4_mission_updated_at is not None else None),
                 "telemetry_source": self.telemetry_source,
                 "telemetry_connected": self.telemetry_connected,
+                "telemetry_ever_connected": self.telemetry_ever_connected,
                 "telemetry_age_s": round(max(0.0, time.monotonic() - self.telemetry_last_update), 1),
+                "last_received_command": self.last_received_command,
+                "last_command_id": self.last_command_id,
                 "drone_profile": self.drone_profile.snapshot(),
             }
 
@@ -290,7 +318,7 @@ class TelemetryInputAdapter:
                 if -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0:
                     self.telemetry.lat = lat
                     self.telemetry.lon = lon
-                    if self.telemetry.home_lat is None or self.telemetry.home_lon is None:
+                    if source != "PX4" and (self.telemetry.home_lat is None or self.telemetry.home_lon is None):
                         self.telemetry.home_lat = lat
                         self.telemetry.home_lon = lon
 
@@ -307,10 +335,37 @@ class TelemetryInputAdapter:
 
             if packet.get("flight_mode"):
                 self.telemetry.flight_mode = str(packet["flight_mode"])
+            if packet.get("armed") is not None:
+                self.telemetry.armed = bool(packet["armed"])
 
+            for key in ("px4_mission_seq", "px4_mission_total", "px4_mission_reached"):
+                if key in packet and packet[key] is not None:
+                    value = int(packet[key])
+                    if value >= 0:
+                        setattr(self.telemetry, key, value)
+                        self.telemetry.px4_mission_updated_at = time.monotonic()
+            if packet.get("px4_mission_reset"):
+                self.telemetry.px4_mission_seq = None
+                self.telemetry.px4_mission_reached = None
+                self.telemetry.px4_mission_total = None
+                self.telemetry.px4_mission_items_complete = False
+                self.telemetry.px4_mission_state = "UNKNOWN"
+                self.telemetry.px4_mission_updated_at = time.monotonic()
+            if "px4_mission_items_complete" in packet:
+                self.telemetry.px4_mission_items_complete = bool(packet["px4_mission_items_complete"])
+                self.telemetry.px4_mission_updated_at = time.monotonic()
+            if "px4_mission_state" in packet:
+                self.telemetry.px4_mission_state = str(packet["px4_mission_state"])
+                self.telemetry.px4_mission_updated_at = time.monotonic()
             self.telemetry.telemetry_source = str(source)
             self.telemetry.telemetry_connected = True
+            if str(source).upper() in ("PX4", "UDP"):
+                self.telemetry.telemetry_ever_connected = True
             self.telemetry.telemetry_last_update = time.monotonic()
+            if "last_command" in packet:
+                self.telemetry.last_received_command = str(packet["last_command"])
+            if "last_command_id" in packet:
+                self.telemetry.last_command_id = packet["last_command_id"]
 
     def disconnect(self, source=None):
         with self.telemetry.lock:
@@ -402,7 +457,7 @@ class EventManager:
                 except OSError:
                     pass
 
-    def emit(self, channel, kind, confidence=1.0, track_id=None, details=None):
+    def emit(self, channel, kind, confidence=1.0, track_id=None, details=None, frame=None):
         now = time.time()
         key = (channel.number, kind, track_id)
         with self.lock:
@@ -423,16 +478,19 @@ class EventManager:
         meta_path = event_dir / "event.json"
 
         with channel.lock:
-            frame = channel.pending.copy() if channel.pending is not None else (channel.raw.copy() if channel.raw is not None else None)
+            frame = frame.copy() if frame is not None else (channel.pending.copy() if channel.pending is not None else (channel.raw.copy() if channel.raw is not None else None))
             pre_frames = [item[1].copy() for item in list(channel.event_buffer)]
 
         if frame is not None:
             cv2.imwrite(str(snapshot_path), frame)
 
         save_video = kind in VIDEO_EVENTS
+        event_risk = RiskAlertEngine.NAMES[RiskAlertEngine.EVENT_SEVERITY.get(kind, 0)]
         meta = {
             "event_id": event_id,
             "event": kind,
+            "risk_level": event_risk,
+            "risk_policy": "RULE_BASED_PROTOTYPE",
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "camera": channel.number,
             "track_id": track_id,
@@ -522,7 +580,7 @@ class AgentState:
         }
 
     def update(self, channels):
-        now = time.monotonic()
+        now = time.time()  # Analyzer stores event expiry times using the wall clock.
         active_events = set()
         camera_states = []
 
@@ -585,6 +643,80 @@ class AgentState:
             return json.loads(json.dumps(self.state))
 
 
+class RiskAlertEngine:
+    """Advisory-only risk evaluation and throttled local alert journal."""
+    # These are configurable prototype policy values, not calibrated safety scores.
+    EVENT_SEVERITY = {
+        "FIRE": 3, "FALL": 3, "SMOKE": 2, "INTRUSION": 2,
+        "CROWD": 2, "NO_HARDHAT": 1, "NO_VEST": 1,
+    }
+    NAMES = {0: "NONE", 1: "LOW", 2: "MEDIUM", 3: "HIGH"}
+    ALERT_REPEAT_SECONDS = 60
+
+    def __init__(self):
+        self.last_signature = None
+        self.last_alert_at = 0.0
+        self.current = {"level": "NONE", "reasons": [], "advice": "NORMAL", "source": "RULE_BASED"}
+
+    def evaluate(self, agent_state):
+        drone = agent_state.get("drone", {})
+        events = set(agent_state.get("active_events", []))
+        reasons = set(events)
+        severity = max((self.EVENT_SEVERITY.get(event, 0) for event in events), default=0)
+        source = str(drone.get("telemetry_source", "SIM")).upper()
+        connected = bool(drone.get("telemetry_connected", False))
+        age = float(drone.get("telemetry_age_s", 999))
+        if (source in ("PX4", "UDP")
+                and bool(drone.get("telemetry_ever_connected", False))
+                and (not connected or age > 5.0)):
+            # CONNECTING is not a loss; only an established link can be LOST.
+            reasons.add("TELEMETRY_LOST")
+            severity = max(severity, 3)
+        if connected and source in ("PX4", "UDP", "SIM"):
+            battery = float(drone.get("battery", 100))
+            if battery <= BATTERY_RTH:
+                reasons.add("BATTERY_CRITICAL")
+                severity = max(severity, 3)
+            elif battery <= BATTERY_LIMIT:
+                reasons.add("BATTERY_LIMIT")
+                severity = max(severity, 2)
+            elif battery <= BATTERY_WARN:
+                reasons.add("BATTERY_WARN")
+                severity = max(severity, 1)
+        priority = ["TELEMETRY_LOST", "BATTERY_CRITICAL", "FIRE", "FALL",
+                    "BATTERY_LIMIT", "SMOKE", "INTRUSION", "CROWD", "BATTERY_WARN",
+                    "NO_HARDHAT", "NO_VEST"]
+        ordered = [name for name in priority if name in reasons] + sorted(reasons.difference(priority))
+        advice = ("CHECK_LINK" if "TELEMETRY_LOST" in reasons else
+                  "CHECK_BATTERY_RTH" if "BATTERY_CRITICAL" in reasons else
+                  "EMERGENCY_REVIEW" if severity == 3 else
+                  "OPERATOR_REVIEW" if severity == 2 else
+                  "CHECK_EVENT" if severity == 1 else "NORMAL")
+        record = {"level": self.NAMES[severity], "reasons": ordered,
+                  "advice": advice, "source": "RULE_BASED", "flight_control": "UNCHANGED"}
+        signature = (record["level"], tuple(record["reasons"]))
+        now = time.monotonic()
+        if severity and (signature != self.last_signature or now - self.last_alert_at >= self.ALERT_REPEAT_SECONDS):
+            entry = dict(record, timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+                         flight_mode=drone.get("flight_mode"), armed=drone.get("armed"),
+                         telemetry_source=source, camera_events={str(c.get("camera")): c.get("events", [])
+                             for c in agent_state.get("cameras", []) if c.get("events")})
+            path = ROOT / "data" / "alerts" / time.strftime("%Y-%m-%d") / "alerts.jsonl"
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                print(f"[RISK ALERT] {record['level']} | {','.join(ordered)} | {advice} | {path}")
+            except OSError as exc:
+                print(f"[RISK ALERT] log write failed: {exc}")
+            self.last_alert_at = now
+        elif not severity and signature != self.last_signature and self.last_signature is not None:
+            print("[RISK ALERT] CLEARED | NORMAL")
+        self.last_signature = signature
+        self.current = record
+        return record
+
+
 class AgentDecisionEngine:
     """AgentState를 읽고 다음 행동을 결정한다. 아직 실제 드론 명령은 보내지 않는다."""
     ACTIONS = ("PATROL", "TRACK", "ORBIT", "RECORD", "ALERT", "RTH", "LAND")
@@ -605,8 +737,13 @@ class AgentDecisionEngine:
         battery = float(drone.get("battery", 100.0))
         flight_mode = str(drone.get("flight_mode", "PATROL"))
 
-        # 1) 안전 상태가 항상 최우선
-        if flight_mode == "LAND":
+        # 착륙 후에는 배터리가 낮아도 새 비행 명령을 만들지 않는다.
+        if flight_mode == "LANDED":
+            decision = {
+                "primary_action": "HOLD", "actions": ["HOLD"],
+                "reason": "ALREADY_LANDED", "priority": 100,
+            }
+        elif flight_mode == "LAND":
             decision = {
                 "primary_action": "LAND",
                 "actions": ["LAND"],
@@ -691,6 +828,38 @@ class AgentDecisionEngine:
                 "priority": 0,
             }
 
+        # PX4 SITL is an observer only. The flight controller's actual mode takes
+        # precedence over proposed Agent navigation actions. Detection events still
+        # produce alerts/recording suggestions; they cannot preempt an RTL/landing.
+        if str(drone.get("telemetry_source", "")).upper() == "PX4":
+            px_mode = flight_mode.upper()
+            px_fresh = (bool(drone.get("telemetry_connected"))
+                        and float(drone.get("telemetry_age_s", 999)) <= 5.0)
+            px_armed = drone.get("armed")
+            # Keep detection-related non-motion actions, including FIRE/FALL alerts.
+            passive_actions = [a for a in decision.get("actions", [])
+                               if a in ("ALERT", "RECORD")]
+            if not px_fresh:
+                monitor_action, monitor_reason = "MONITOR", "PX4_TELEMETRY_STALE"
+            elif px_armed is False:
+                # Disarmed on the ground. Do not claim a new mission is underway.
+                monitor_action, monitor_reason = "STANDBY", "PX4_DISARMED"
+            elif px_mode in ("RTL", "RETURN", "AUTO.RTL", "RETURNING_HOME"):
+                monitor_action, monitor_reason = "MONITOR_RTH", "PX4_RETURN_IN_PROGRESS"
+            elif px_mode in ("LAND", "AUTO.LAND", "LANDING"):
+                monitor_action, monitor_reason = "MONITOR_LANDING", "PX4_LANDING_IN_PROGRESS"
+            else:
+                monitor_action, monitor_reason = "MONITOR", f"PX4_MODE_{px_mode}"
+            decision = {
+                "primary_action": monitor_action,
+                "actions": list(dict.fromkeys(passive_actions + [monitor_action])),
+                "reason": monitor_reason,
+                "priority": max(int(decision.get("priority", 0)), 95),
+                "detected_event_action": decision.get("primary_action"),
+                "px4_flight_mode": px_mode,
+                "read_only": True,
+            }
+
         decision["updated_at"] = time.time()
 
         with self.lock:
@@ -754,7 +923,15 @@ class DroneCommandBuilder:
             "updated_at": time.time(),
         }
 
-        if action == "PATROL":
+        if action in {"STANDBY", "MONITOR", "MONITOR_RTH", "MONITOR_LANDING"}:
+            command["motion"] = False
+            command["params"] = {
+                "monitor_only": True,
+                "actual_flight_mode": decision.get("px4_flight_mode"),
+                "event_recommendation": decision.get("detected_event_action"),
+            }
+
+        elif action == "PATROL":
             command["params"] = {
                 "altitude_m": default_alt,
                 "speed_mps": min(6.0, obstacle_speed * 0.5),
@@ -869,8 +1046,27 @@ class CommandSafetyValidator:
         max_ascent = profile.get("max_ascent_speed_mps")
         max_descent = profile.get("max_descent_speed_mps")
 
+        # 착륙 완료 상태에서는 저배터리 RTH 재요청도 차단한다.
+        if flight_mode == "LANDED":
+            if cmd != "HOLD":
+                adjustments.append(f"{cmd}->HOLD")
+            safe["command"] = "HOLD"
+            safe["motion"] = False
+            safe["params"] = {"hold_position": True}
+            reason = "ALREADY_LANDED"
+
+        # UDP 연결 끊김에서는 비행 명령을 새로 보내지 않는다.
+        # 실제 기체 fail-safe는 별도 드론 컨트롤러에서 구현해야 한다.
+        elif str(drone.get("telemetry_source", "SIM")) == "UDP" and (not connected or telemetry_age > 5.0):
+            approved = False
+            safe["command"] = "HOLD"
+            safe["motion"] = False
+            safe["params"] = {"hold_position": True}
+            adjustments.append(f"{cmd}->HOLD")
+            reason = "UDP_TELEMETRY_LOST"
+
         # 1) 이미 LAND 단계면 어떤 이동 명령보다 LAND가 우선.
-        if flight_mode == "LAND":
+        elif flight_mode == "LAND":
             if cmd != "LAND":
                 adjustments.append(f"{cmd}->LAND")
             safe["command"] = "LAND"
@@ -905,6 +1101,17 @@ class CommandSafetyValidator:
 
         # 4) RTH에 HOME 좌표가 없으면 자동 복귀 명령을 승인하지 않는다.
         elif cmd == "RTH" and (drone.get("home_lat") is None or drone.get("home_lon") is None):
+            approved = False
+            safe["command"] = "HOLD"
+            safe["motion"] = False
+            safe["params"] = {"hold_position": True, "alert": "HOME_NOT_SET"}
+            adjustments.append("RTH->HOLD")
+            reason = "HOME_NOT_SET"
+
+        # Final safety gate: a low-battery override above must never skip HOME validation.
+        if safe.get("command") == "RTH" and (
+            drone.get("home_lat") is None or drone.get("home_lon") is None
+        ):
             approved = False
             safe["command"] = "HOLD"
             safe["motion"] = False
@@ -973,39 +1180,102 @@ class CommandSafetyValidator:
 class DroneIOBridge:
     """실제 드론 연결부를 한 곳으로 모으는 공통 I/O 브리지.
 
-    INPUT  : 실제 기체 -> TelemetryInputAdapter -> TelemetryState
+    INPUT  : 외부 텔레메트리 -> TelemetryInputAdapter -> TelemetryState
     OUTPUT : safe_command -> FlightAdapter
 
-    현재 SIM에서는 실제 외부 연결을 만들지 않고 구조만 사용한다.
-    나중에 PX4/ROS2/Skydio 연결 코드는 이 클래스의 poll_telemetry()와
-    FlightAdapter 구현부만 교체하면 된다.
+    SIM에서는 내부 상태를 사용하고,
+    UDP 모드에서는 localhost UDP JSON으로 외부 시뮬레이터/브리지와 통신할 수 있다.
     """
-    def __init__(self, telemetry_input, flight_adapter):
+    def __init__(self, telemetry_input, flight_adapter, udp_telemetry_port=14560):
         self.telemetry_input = telemetry_input
         self.flight_adapter = flight_adapter
         self.input_source = getattr(flight_adapter, "name", "SIM")
         self.last_input_at = None
         self.lock = threading.Lock()
+        self.udp_telemetry_port = int(udp_telemetry_port)
+        self.udp_socket = None
+
+        if self.input_source == "UDP":
+            with self.telemetry_input.telemetry.lock:
+                self.telemetry_input.telemetry.telemetry_connected = False
+                self.telemetry_input.telemetry.telemetry_source = "UDP"
+                self.telemetry_input.telemetry.telemetry_last_update = time.monotonic() - 3600
+            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.udp_socket.bind(("127.0.0.1", self.udp_telemetry_port))
+            self.udp_socket.setblocking(False)
+            print(
+                f"[DRONE IO] UDP telemetry listen -> "
+                f"127.0.0.1:{self.udp_telemetry_port}"
+            )
 
     def ingest_telemetry(self, packet, source=None):
-        """실제 어댑터가 받은 텔레메트리를 공통 상태로 전달."""
+        """외부 어댑터가 받은 텔레메트리를 공통 상태로 전달."""
         src = source or self.input_source
         self.telemetry_input.ingest(packet, source=src)
         with self.lock:
             self.last_input_at = time.time()
 
     def poll_telemetry(self):
-        """외부 기체 텔레메트리 수신 자리.
+        """UDP JSON 텔레메트리를 비차단 방식으로 읽는다."""
+        if self.udp_socket is None:
+            return None
 
-        SIM: 별도 수신 없음.
-        PX4/ROS2/Skydio: 추후 SDK/MAVLink/ROS subscriber 등을 여기서 읽어
-        ingest_telemetry()로 넘긴다.
-        """
-        return None
+        latest = None
+        # UI 한 프레임에서 오래 막히지 않도록 최대 10개까지만 처리.
+        for _ in range(10):
+            try:
+                data, _addr = self.udp_socket.recvfrom(65535)
+            except BlockingIOError:
+                break
+            except OSError as exc:
+                print(f"[DRONE IO] UDP receive error: {exc}")
+                break
 
-    def send_command(self, safe_command):
-        """검증 완료 명령을 현재 FlightAdapter로 전달."""
-        return self.flight_adapter.send(safe_command)
+            try:
+                packet = json.loads(data.decode("utf-8"))
+                if not isinstance(packet, dict):
+                    raise ValueError("telemetry packet must be a JSON object")
+                self.ingest_telemetry(packet, source="UDP")
+                latest = packet
+            except Exception as exc:
+                print(f"[DRONE IO] invalid telemetry packet: {exc}")
+
+        if latest is None:
+            state = self.telemetry_input.telemetry
+            with state.lock:
+                if state.telemetry_source == "UDP" and time.monotonic() - state.telemetry_last_update > 5.0:
+                    state.telemetry_connected = False
+        return latest
+
+    def send_command(self, safe_command, telemetry_state=None):
+        """완료된 착륙을 유지하고, RTH/LAND 재전송을 제한한다."""
+        mode = str((telemetry_state or {}).get("flight_mode", ""))
+        command = str(safe_command.get("command", "HOLD"))
+        now = time.monotonic()
+        if mode == "LANDED":
+            return {
+                "adapter": getattr(self.flight_adapter, "name", "UNKNOWN"),
+                "connected": bool(getattr(self.flight_adapter, "connected", False)),
+                "status": "ACK", "command": "HOLD", "ack": "LANDED_NO_SEND",
+                "sent_at": time.time(),
+            }
+        # 긴급 명령은 주기적으로 재전송하되 UI 프레임마다 반복하지 않는다.
+        if (command in {"RTH", "LAND"} and
+                getattr(self, "_last_critical_command", None) == command and
+                now - getattr(self, "_last_critical_at", -1e9) < 2.0 and
+                getattr(self, "_last_critical_result", {}).get("status") in {"ACK", "SENT"}):
+            result = dict(self._last_critical_result)
+            result["ack"] = "RETRY_THROTTLED"
+            return result
+        result = self.flight_adapter.send(safe_command)
+        if command in {"RTH", "LAND"}:
+            self._last_critical_command = command
+            self._last_critical_at = now
+            self._last_critical_result = dict(result)
+        else:
+            self._last_critical_command = None
+        return result
 
     def snapshot(self):
         with self.lock:
@@ -1014,7 +1284,16 @@ class DroneIOBridge:
                 "last_input_at": self.last_input_at,
                 "output_adapter": getattr(self.flight_adapter, "name", "UNKNOWN"),
                 "adapter_connected": bool(getattr(self.flight_adapter, "connected", False)),
+                "udp_telemetry_port": self.udp_telemetry_port if self.udp_socket else None,
             }
+
+    def close(self):
+        if self.udp_socket is not None:
+            try:
+                self.udp_socket.close()
+            except OSError:
+                pass
+            self.udp_socket = None
 
 
 class FlightAdapterBase:
@@ -1110,21 +1389,185 @@ class SimFlightAdapter(FlightAdapterBase):
 
 
 class Px4FlightAdapter(FlightAdapterBase):
-    """PX4/MAVLink 연결용 자리. 실제 연결 전까지는 비활성 스텁."""
+    """Read-only PX4 SITL observer: NEVER transmits a MAVLink flight command."""
     name = "PX4"
 
     def send(self, safe_command):
-        command_name = str(safe_command.get("command", "HOLD"))
-        return self._store_result(
-            {
-                "adapter": self.name,
-                "connected": self.connected,
-                "status": "BLOCKED",
-                "command": command_name,
-                "ack": "PX4_NOT_CONNECTED",
-                "sent_at": time.time(),
-            }
-        )
+        return self._store_result({
+            "adapter": "PX4", "connected": False, "status": "MONITOR",
+            "command": safe_command.get("command", "HOLD"),
+            "ack": "READ_ONLY_NO_COMMAND_SENT", "sent_at": time.time(),
+        })
+
+
+class Px4TelemetryReceiver(threading.Thread):
+    """Read-only MAVLink PX4 observer; no commands or stream requests sent."""
+    def __init__(self, telemetry_input, port=14540):
+        super().__init__(daemon=True, name="PX4-MAVLink-Receiver")
+        self.telemetry_input = telemetry_input
+        self.port = int(port)
+        self.stop_event = threading.Event()
+        self.last_rx = None
+        self.mission_total = None
+        self.mission_reached = None
+        self.last_mode = None
+        self.mission_items_complete = False
+        self.mission_seen_progress = False
+        # A stored MISSION_CURRENT is not proof of a mission in this app session.
+        self.mission_session_started = False
+        self.px4_armed = False
+
+    @staticmethod
+    def _px4_mode(message, mavutil):
+        try:
+            mode = mavutil.mode_string_v10(message)
+            if mode and mode not in ("UNKNOWN", "Mode(0x00000000)"):
+                return str(mode).upper()
+        except (ValueError, AttributeError, TypeError):
+            pass
+        return "UNKNOWN"
+
+    def run(self):
+        try:
+            from pymavlink import mavutil
+        except ImportError:
+            print("[PX4] pymavlink missing: python -m pip install pymavlink")
+            return
+        while not self.stop_event.is_set():
+            conn = None
+            try:
+                conn = mavutil.mavlink_connection(
+                    f"udpin:127.0.0.1:{self.port}", source_system=250,
+                )
+                print(f"[PX4] READ-ONLY MAVLink listening on UDP 127.0.0.1:{self.port}")
+                self.last_rx = None
+                while not self.stop_event.is_set():
+                    msg = conn.recv_match(blocking=True, timeout=0.5)
+                    now = time.monotonic()
+                    if msg is None:
+                        if self.last_rx is None or now - self.last_rx > 5:
+                            self.telemetry_input.disconnect("PX4")
+                        continue
+                    if msg.get_type() == "BAD_DATA":
+                        continue
+                    # Ignore GCS and other systems on shared UDP transports.
+                    if msg.get_srcSystem() != 1:
+                        continue
+                    self.last_rx = now
+                    kind = msg.get_type()
+                    packet = {}
+                    if kind == "HEARTBEAT":
+                        mode = self._px4_mode(msg, mavutil)
+                        packet["flight_mode"] = mode
+                        packet["armed"] = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+                        # PX4 can repeatedly broadcast the LAST saved mission, even
+                        # while disarmed in LOITER. Open a progress session only
+                        # after observing an armed transition into AUTO.MISSION.
+                        self.px4_armed = packet["armed"]
+                        new_mission = (self.px4_armed
+                                       and mode in ("MISSION", "AUTO.MISSION")
+                                       and (not self.mission_session_started
+                                            or self.last_mode not in ("MISSION", "AUTO.MISSION")))
+                        if new_mission:
+                            self.mission_session_started = True
+                            self.mission_items_complete = False
+                            self.mission_seen_progress = False
+                            self.mission_total = None
+                            self.mission_reached = None
+                            self._last_seq = None
+                            packet["px4_mission_reset"] = True
+                            print("[PX4 MISSION] new armed mission -> reset stored progress")
+                        if mode != self.last_mode:
+                            print(f"[PX4 MODE] {self.last_mode} -> {mode}")
+                            self.last_mode = mode
+                        if not self.mission_session_started:
+                            packet["px4_mission_state"] = "IDLE"
+                        elif mode in ("MISSION", "AUTO.MISSION") and self.px4_armed:
+                            packet["px4_mission_state"] = "ACTIVE"
+                        elif mode in ("RTL", "RETURN", "AUTO.RTL") and self.px4_armed:
+                            packet["px4_mission_state"] = "RETURNING"
+                        elif mode in ("LAND", "AUTO.LAND", "LANDING") and self.px4_armed:
+                            packet["px4_mission_state"] = "LANDING"
+                        elif not self.px4_armed:
+                            packet["px4_mission_state"] = (
+                                "COMPLETED" if self.mission_items_complete else "STOPPED"
+                            )
+                    elif kind == "GLOBAL_POSITION_INT":
+                        packet["lat"] = msg.lat / 1e7
+                        packet["lon"] = msg.lon / 1e7
+                        packet["altitude_m"] = msg.relative_alt / 1000.0
+                        if 0 <= msg.hdg < 36000:
+                            packet["heading_deg"] = msg.hdg / 100.0
+                    elif kind == "HOME_POSITION":
+                        packet["home_lat"] = msg.latitude / 1e7
+                        packet["home_lon"] = msg.longitude / 1e7
+                    elif kind in ("SYS_STATUS", "BATTERY_STATUS"):
+                        if 0 <= msg.battery_remaining <= 100:
+                            packet["battery"] = float(msg.battery_remaining)
+                    elif kind == "MISSION_CURRENT":
+                        # Ignore cached mission reports before a mission actually
+                        # starts, and after disarm. These can stay at seq=2,total=3
+                        # for the entire next idle period.
+                        if not (self.mission_session_started and self.px4_armed):
+                            continue
+                        seq = int(msg.seq)
+                        if seq < 0:
+                            continue
+                        total = int(getattr(msg, "total", 0) or 0)
+                        if total > 0:
+                            self.mission_total = total
+                            packet["px4_mission_total"] = total
+                        if self.mission_total and seq >= self.mission_total:
+                            continue
+                        packet["px4_mission_seq"] = seq
+                        mission_state_code = int(getattr(msg, "mission_state", 0) or 0)
+                        # A saved COMPLETE packet can arrive immediately after
+                        # switching modes; do not count it as progress in a new run.
+                        if mission_state_code == 5 and not self.mission_seen_progress:
+                            print(f"[PX4 MISSION] ignoring cached COMPLETE seq={seq} total={self.mission_total or '?'}")
+                            continue
+                        if mission_state_code == 2:
+                            self.mission_seen_progress = True
+                        if mission_state_code == 5:
+                            final_item = (self.mission_total is not None
+                                          and seq >= self.mission_total - 1)
+                            if self.mission_seen_progress and final_item:
+                                self.mission_items_complete = True
+                                packet["px4_mission_items_complete"] = True
+                                if self.last_mode not in ("RTL", "RETURN", "AUTO.RTL", "LAND", "AUTO.LAND", "LANDING"):
+                                    packet["px4_mission_state"] = "COMPLETED"
+                            else:
+                                print(f"[PX4 MISSION] ignoring premature COMPLETE seq={seq} total={self.mission_total or '?'}")
+                        if getattr(self, '_last_seq', None) != seq:
+                            print(f"[PX4 MISSION] current seq={seq} total={self.mission_total or '?'}")
+                        self._last_seq = seq
+                    elif kind == "MISSION_ITEM_REACHED":
+                        if not (self.mission_session_started and self.px4_armed):
+                            continue
+                        reached_seq = int(msg.seq)
+                        if reached_seq < 0 or (self.mission_total is not None and reached_seq >= self.mission_total):
+                            continue
+                        self.mission_reached = reached_seq
+                        self.mission_seen_progress = True
+                        packet["px4_mission_reached"] = reached_seq
+                        if self.mission_total and reached_seq == self.mission_total - 1:
+                            self.mission_items_complete = True
+                            packet["px4_mission_items_complete"] = True
+                            if self.last_mode not in ("RTL", "RETURN", "AUTO.RTL", "LAND", "AUTO.LAND", "LANDING"):
+                                packet["px4_mission_state"] = "COMPLETED"
+                        print(f"[PX4 MISSION] reached seq={self.mission_reached}")
+                    if packet:
+                        self.telemetry_input.ingest(packet, source="PX4")
+            except (OSError, ValueError, RuntimeError) as exc:
+                print(f"[PX4] MAVLink receiver: {exc}; retrying...")
+                self.telemetry_input.disconnect("PX4")
+                self.stop_event.wait(2.0)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
 
 class Ros2FlightAdapter(FlightAdapterBase):
@@ -1163,8 +1606,67 @@ class SkydioFlightAdapter(FlightAdapterBase):
         )
 
 
-def create_flight_adapter(name):
+class UdpFlightAdapter(FlightAdapterBase):
+    """검증된 safe_command를 localhost UDP JSON으로 외부 프로세스에 전달."""
+    name = "UDP"
+
+    def __init__(self, host="127.0.0.1", port=14561):
+        super().__init__()
+        self.host = str(host)
+        self.port = int(port)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.connect()
+
+    def send(self, safe_command):
+        command_name = str(safe_command.get("command", "HOLD"))
+        safety = safe_command.get("safety", {})
+        approved = bool(safety.get("approved", True))
+
+        if not approved:
+            return self._store_result(
+                {
+                    "adapter": self.name,
+                    "connected": True,
+                    "status": "BLOCKED",
+                    "command": command_name,
+                    "ack": safety.get("reason", "SAFETY_BLOCK"),
+                    "sent_at": time.time(),
+                }
+            )
+
+        try:
+            outbound = dict(safe_command)
+            outbound["command_id"] = f"{time.time_ns()}"
+            payload = json.dumps(outbound, ensure_ascii=False).encode("utf-8")
+            self.sock.sendto(payload, (self.host, self.port))
+            result = {
+                "adapter": self.name,
+                "connected": True,
+                "status": "SENT",
+                "command": command_name,
+                "command_id": outbound["command_id"],
+                "ack": f"UDP_SENT_UNCONFIRMED:{self.host}:{self.port}",
+                "params": safe_command.get("params", {}),
+                "sent_at": time.time(),
+            }
+        except OSError as exc:
+            result = {
+                "adapter": self.name,
+                "connected": False,
+                "status": "BLOCKED",
+                "command": command_name,
+                "ack": f"UDP_ERROR:{exc}",
+                "sent_at": time.time(),
+            }
+
+        return self._store_result(result)
+
+
+def create_flight_adapter(name, udp_host="127.0.0.1", udp_command_port=14561):
     name = str(name).upper()
+    if name == "UDP":
+        return UdpFlightAdapter(udp_host, udp_command_port)
+
     adapters = {
         "SIM": SimFlightAdapter,
         "PX4": Px4FlightAdapter,
@@ -1360,18 +1862,33 @@ class MissionExecutor:
         now_mono = time.monotonic()
         now_wall = time.time()
         command = str(safe_command.get("command", "HOLD"))
-        signature = self._signature(safe_command)
+        flight_mode = str(telemetry_state.get("flight_mode", ""))
+        # RTH -> LAND -> LANDED는 각각 새 임무가 아닌 하나의 귀환 임무다.
+        rth_sequence = (command in {"RTH", "LAND"} or flight_mode == "LANDED")
+        if rth_sequence and (command == "RTH" or flight_mode in {"LAND", "LANDED"}):
+            signature = ("RTH_SEQUENCE",)
+        else:
+            signature = self._signature(safe_command)
         adapter_status = str(adapter_result.get("status", "BLOCKED"))
+        read_only_px4 = adapter_result.get("adapter") == "PX4"
+        is_udp = adapter_result.get("adapter") == "UDP"
+        fresh = bool(telemetry_state.get("telemetry_connected")) and float(telemetry_state.get("telemetry_age_s", 999)) <= 5
+        received = str(telemetry_state.get("last_received_command") or "")
+        matched = (received == command and
+                   str(telemetry_state.get("last_command_id")) == str(adapter_result.get("command_id")))
+        # RTH retransmissions may be throttled; mode itself is stronger evidence than send ACK.
+        observed = matched or (command == "RTH" and flight_mode in {"RETURNING_HOME", "LAND", "LANDED"}) or (command == "LAND" and flight_mode in {"LAND", "LANDED"}) or (command in {"PATROL", "TRACK", "ORBIT"} and received == command and flight_mode == command and telemetry_state.get("last_command_id") is not None) or (command == "HOLD" and flight_mode in {"HOLD", "LANDED"})
 
         with self.lock:
             if signature != self.last_signature:
                 self.last_signature = signature
                 self.started_at = now_mono
-                self.mission_id = self._make_mission_id(command)
+                mission_name = "RTH" if signature == ("RTH_SEQUENCE",) else command
+                self.mission_id = self._make_mission_id(mission_name)
                 self.last_logged_status = None
                 self.state = {
                     "mission_id": self.mission_id,
-                    "mission": command,
+                    "mission": mission_name,
                     "status": "QUEUED",
                     "progress": 0,
                     "reason": "NEW_COMMAND",
@@ -1385,26 +1902,38 @@ class MissionExecutor:
 
             elapsed = 0.0 if self.started_at is None else max(0.0, now_mono - self.started_at)
 
-            if adapter_status != "ACK":
+            if read_only_px4:
+                status = "MONITORING"
+                progress = 0
+                reason = "PX4_READ_ONLY_NO_COMMAND"
+            elif adapter_status not in {"ACK", "SENT"}:
                 status = "FAILED"
                 progress = 0
                 reason = adapter_result.get("ack", "ADAPTER_BLOCKED")
+
+            elif is_udp and not fresh:
+                status = "FAILED" if elapsed >= 5.0 else "QUEUED"
+                progress = 0
+                reason = "TELEMETRY_TIMEOUT" if elapsed >= 5.0 else "WAIT_TELEMETRY"
+
+            elif is_udp and not observed:
+                status = "FAILED" if elapsed >= 5.0 else "QUEUED"
+                progress = 0
+                reason = "COMMAND_NOT_CONFIRMED" if elapsed >= 5.0 else "WAIT_COMMAND_CONFIRMATION"
 
             elif command == "PATROL":
                 status = "RUNNING"
                 progress = 0
                 reason = "PATROL_ACTIVE"
 
-            elif command == "HOLD":
-                status = "HOLDING"
-                progress = 0
-                reason = "SAFE_HOLD"
-
             elif command in {"ORBIT", "TRACK"}:
                 duration = 5.0
                 progress = min(100, int((elapsed / duration) * 100))
-                status = "COMPLETED" if progress >= 100 else "EXECUTING"
-                reason = f"{command}_SIM"
+                status = ("RUNNING" if is_udp and flight_mode == command else
+                          ("COMPLETED" if progress >= 100 else "EXECUTING"))
+                if is_udp:
+                    progress = 0  # 이동 성공을 시간만으로 가정하지 않음
+                reason = f"{command}_TELEMETRY" if is_udp else f"{command}_SIM"
 
             elif command == "RECORD":
                 duration = 3.0
@@ -1412,26 +1941,36 @@ class MissionExecutor:
                 status = "COMPLETED" if progress >= 100 else "EXECUTING"
                 reason = "RECORD_SIM"
 
-            elif command == "RTH":
-                flight_mode = str(telemetry_state.get("flight_mode", ""))
-                if flight_mode == "LAND":
+            elif signature == ("RTH_SEQUENCE",):
+                if flight_mode == "LANDED":
                     status = "COMPLETED"
                     progress = 100
-                    reason = "RTH_REACHED_LAND"
+                    reason = "RTH_LANDED"
+                elif flight_mode == "LAND":
+                    status = "EXECUTING"
+                    progress = 95
+                    reason = "RTH_LANDING"
                 elif flight_mode == "RETURNING_HOME":
                     status = "EXECUTING"
-                    progress = min(95, max(20, int(elapsed * 12)))
+                    progress = min(90, max(20, int(elapsed * 12)))
                     reason = "RETURNING_HOME"
                 else:
                     status = "EXECUTING"
                     progress = min(20, int(elapsed * 10))
                     reason = "RTH_REQUESTED"
 
+            elif command == "HOLD":
+                status = "HOLDING"
+                progress = 0
+                reason = "SAFE_HOLD"
+
             elif command == "LAND":
                 duration = 3.0
                 progress = min(100, int((elapsed / duration) * 100))
-                status = "COMPLETED" if progress >= 100 else "EXECUTING"
-                reason = "LAND_SIM"
+                status = ("COMPLETED" if flight_mode == "LANDED" else "EXECUTING") if is_udp else ("COMPLETED" if progress >= 100 else "EXECUTING")
+                if is_udp:
+                    progress = 100 if flight_mode == "LANDED" else 50
+                reason = "LAND_TELEMETRY" if is_udp else "LAND_SIM"
 
             else:
                 status = "EXECUTING"
@@ -1442,7 +1981,7 @@ class MissionExecutor:
             self.state.update(
                 {
                     "mission_id": self.mission_id,
-                    "mission": command,
+                    "mission": self.state.get("mission", command),
                     "status": status,
                     "progress": progress,
                     "reason": reason,
@@ -1498,8 +2037,9 @@ class SafetyController:
         self.last_flight_mode = None
 
     def update(self, channel):
-        # 실제 드론 연동 전에는 테스트용 RTH 상태 머신을 갱신한다.
-        self.telemetry.update_rth_simulation()
+        # 외부 UDP 상태를 내부 시간 기반 SIM 상태 머신이 덮어쓰지 않도록 한다.
+        if self.telemetry.snapshot().get("telemetry_source") == "SIM":
+            self.telemetry.update_rth_simulation()
         state = self.telemetry.snapshot()
         battery = state["battery"]
 
@@ -1519,7 +2059,8 @@ class SafetyController:
             print(f"[BATTERY] {battery:.1f}% -> {level}")
             self.last_level = level
 
-        if level == "RTH" and self.telemetry.request_rth():
+        if (level == "RTH" and state["flight_mode"] not in {"RETURNING_HOME", "LAND", "LANDED"}
+                and state["telemetry_source"] == "SIM" and self.telemetry.request_rth()):
             self.event_manager.emit(
                 channel,
                 "LOW_BATTERY_RTH",
@@ -1531,6 +2072,35 @@ class SafetyController:
                     "simulation": True,
                 },
             )
+
+
+def likely_sky_cloud_smoke(frame, rect, fire_present=False):
+    """Conservative heuristic for cloud/blue-sky false positives (not a smoke classifier).
+
+    Only veto an upper-frame candidate if its rectangle includes substantial clear
+    blue sky. Fire evidence always bypasses this filter. Genuine outdoor smoke
+    can overlap sky, so field validation is essential.
+    """
+    if fire_present or frame is None:
+        return False
+    height, width = frame.shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in rect)
+    x1, x2 = max(0, x1), min(width, x2)
+    y1, y2 = max(0, y1), min(height, y2)
+    if x2 - x1 < 20 or y2 - y1 < 20:
+        return False
+    # Require the candidate to be predominantly in the upper sky area.
+    if (y1 + y2) * 0.5 > height * 0.40 or y2 > height * 0.58:
+        return False
+    roi = frame[y1:y2:4, x1:x2:4]
+    if roi.size == 0:
+        return False
+    b = roi[:, :, 0].astype(np.int16)
+    g = roi[:, :, 1].astype(np.int16)
+    r = roi[:, :, 2].astype(np.int16)
+    # Blue-dominant, sufficiently bright pixels indicate clear sky background.
+    blue_sky = (b > 115) & (b > r + 23) & (b > g + 8) & (g > 65)
+    return float(np.mean(blue_sky)) >= 0.28
 
 
 def smoke_screen_direction(dx, dy, min_move=18):
@@ -1565,6 +2135,42 @@ def smoke_screen_compass(direction):
         "STABLE": "--",
         "UNKNOWN": "--",
     }.get(direction, "--")
+
+# Screen motion is not a geographic wind bearing unless camera orientation is calibrated.
+_SMOKE_SCREEN_BEARINGS = {
+    "UP": 0.0, "RIGHT_UP": 45.0, "RIGHT": 90.0,
+    "RIGHT_DOWN": 135.0, "DOWN": 180.0, "LEFT_DOWN": 225.0,
+    "LEFT": 270.0, "LEFT_UP": 315.0,
+}
+_SMOKE_COMPASS_8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+def estimated_smoke_bearing(screen_direction, heading_deg, camera_yaw_offset_deg=None):
+    """Return approximate FROM-image plume travel bearing, clockwise from true north.
+
+    Only available when the operator explicitly provides a camera calibration offset.
+    Assumes fixed forward-oriented, non-mirrored image and negligible camera roll;
+    perspective, gimbal tilt, changing camera yaw, and wind drift are NOT corrected.
+    This is NOT a measured wind direction.
+    """
+    if camera_yaw_offset_deg is None or heading_deg is None:
+        return None
+    screen_bearing = _SMOKE_SCREEN_BEARINGS.get(screen_direction)
+    if screen_bearing is None:
+        return None
+    try:
+        bearing = (float(heading_deg) + float(camera_yaw_offset_deg) + screen_bearing) % 360.0
+        if not np.isfinite(bearing):
+            return None
+        return bearing
+    except (TypeError, ValueError):
+        return None
+
+
+def smoke_bearing_label(bearing):
+    if bearing is None:
+        return None
+    return _SMOKE_COMPASS_8[int((bearing + 22.5) // 45) % 8]
 
 def fit_image(image, width, height):
     h, w = image.shape[:2]
@@ -1709,10 +2315,30 @@ class Channel:
             with self.process_lock:
                 if self.process is process:
                     self.process = None
+    def read_gazebo(self):
+        from tools.gazebo.camera_source import frames
+        topic = self.source[len("gazebo://"):]
+        if not topic.startswith("/"):
+            raise ValueError("Gazebo source must be gazebo:///safety/probe/image")
+        def process_changed(process):
+            with self.process_lock:
+                self.process = process
+        stream = frames(topic, self.stop_event, process_changed)
+        try:
+            for frame in stream:
+                if self.stop_event.is_set():
+                    break
+                self.publish(frame)
+        finally:
+            stream.close()
+
     def read_loop(self):
         while not self.stop_event.is_set():
             cap = None
             try:
+                if self.source.startswith("gazebo://"):
+                    self.read_gazebo()
+                    continue
                 resolved = resolve_source(self.source)
                 local = isinstance(resolved, str) and "://" not in resolved
                 if local and not Path(resolved).is_file():
@@ -1744,6 +2370,9 @@ class Channel:
             except Exception as error:
                 with self.lock:
                     self.status = "Connection error - retrying"
+                    if self.source.startswith("gazebo://"):
+                        self.pending = None
+                        self.receive_fps = 0.0
                 print(f"[Camera {self.number}] {error}")
                 self.stop_event.wait(3)
             finally:
@@ -1755,6 +2384,7 @@ class Analyzer(threading.Thread):
         super().__init__(daemon=True)
         self.channels, self.device, self.stop_event = channels, device, threading.Event()
         self.error = None
+        self.smoke_camera_yaw_offset = None  # Explicit opt-in: no uncalibrated north claims.
     def run(self):
         try:
             models = {}  # 새 영상으로 바꾸면 추적기도 새로 생성
@@ -1835,6 +2465,10 @@ class Analyzer(threading.Thread):
                     continue
                 if "smoke" in name and conf < c.smoke_conf_threshold:
                     continue
+                if "smoke" in name and likely_sky_cloud_smoke(
+                    frame, (x1, y1, x2, y2), fire_present=(time.time() < c.fire_until)
+                ):
+                    continue  # Suppress cloud/sky candidate boxes in the preview.
 
                 if "fire" in name or "flame" in name:
                     label = "FIRE"
@@ -1955,6 +2589,8 @@ class Analyzer(threading.Thread):
                         tipLength=0.28,
                     )
 
+            # 연기 나침반은 항상 영상 화면 기준 연기 확산 방향만 표시한다.
+            # 드론 Heading과 지리적 방위 추정값은 나침반 방향을 바꾸지 않는다.
             compass = smoke_screen_compass(c.smoke_direction)
 
             # 오른쪽 위 나침반 UI
@@ -2030,7 +2666,7 @@ class Analyzer(threading.Thread):
             cv2.putText(
                 image,
                 f"SMOKE {compass}",
-                (panel_x1 + 14, panel_y2 - 10),
+                (panel_x1 + 8, panel_y2 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.50,
                 (255, 255, 255),
@@ -2063,8 +2699,13 @@ class Analyzer(threading.Thread):
                         best_fire = (fx1, fy1, fx2, fy2)
 
                 if "smoke" in name and conf >= c.smoke_conf_threshold:
-                    smoke_conf = max(smoke_conf, conf)
                     sx1, sy1, sx2, sy2 = map(int, box.xyxy[0].tolist())
+                    if likely_sky_cloud_smoke(
+                        frame, (sx1, sy1, sx2, sy2),
+                        fire_present=(fire_conf >= 0.35 or time.time() < c.fire_until),
+                    ):
+                        continue  # Do not advance the confirmed smoke alarm counter.
+                    smoke_conf = max(smoke_conf, conf)
                     area = max(0, sx2 - sx1) * max(0, sy2 - sy1)
                     if area > largest_smoke_area:
                         largest_smoke_area = area
@@ -2153,7 +2794,7 @@ class Analyzer(threading.Thread):
                 if c.event_manager:
                     c.event_manager.emit(
                         c, "FIRE", fire_conf,
-                        details={"confirmed_hits": c.fire_hits}
+                        details={"confirmed_hits": c.fire_hits}, frame=frame,
                     )
                 c.fire_hits = 0
 
@@ -2164,6 +2805,7 @@ class Analyzer(threading.Thread):
                         c,
                         "SMOKE",
                         smoke_conf,
+                        frame=frame,
                         details={
                             "confirmed_hits": c.smoke_hits,
                             "screen_direction": c.smoke_direction,
@@ -2172,8 +2814,19 @@ class Analyzer(threading.Thread):
                             "scene_brightness": round(c.scene_brightness, 1),
                             "night_mode": c.night_mode,
                             "smoke_conf_threshold": round(c.smoke_conf_threshold, 2),
-                            "compass_direction": None,
-                            "heading_required": True,
+                            "compass_direction": smoke_bearing_label(
+                                estimated_smoke_bearing(
+                                    c.smoke_direction,
+                                    (lambda t: t.get("heading_deg") if t.get("telemetry_connected")
+                                        and float(t.get("telemetry_age_s", 999)) <= 5 else None)(
+                                            c.event_manager.telemetry.snapshot()),
+                                    self.smoke_camera_yaw_offset,
+                                )
+                            ),
+                            "heading_required": self.smoke_camera_yaw_offset is None,
+                            "bearing_method": "CAMERA_HEADING_ESTIMATE" if self.smoke_camera_yaw_offset is not None else "SCREEN_ONLY",
+                            "camera_yaw_offset_deg": self.smoke_camera_yaw_offset,
+                            "bearing_note": "Approximate image plume bearing, NOT wind direction; camera must be calibrated",
                         },
                     )
                 c.smoke_hits = 0
@@ -2302,7 +2955,7 @@ class Analyzer(threading.Thread):
                 if c.event_manager:
                     c.event_manager.emit(
                         c, "CROWD", 1.0,
-                        details={"people": person_count, "danger_people": danger_count, "risk": risk}
+                        details={"people": person_count, "danger_people": danger_count, "risk": risk}, frame=frame,
                     )
                 c.crowd_hits = 0
 
@@ -2427,7 +3080,7 @@ class MainView:
         layout.addWidget(self.label)
         self.window.setMinimumSize(1280, 720)
         self.window.resize(WIDTH, HEIGHT)
-        self.window.show()
+        self.window.showMaximized()  # 시작 시 사용 가능한 화면을 최대한 활용
         self.label.setFocus()
         class KeyFilter(QObject):
             def eventFilter(self, watched, event):
@@ -2532,6 +3185,8 @@ class Dashboard:
         self.command_validator = command_validator
         self.io_bridge = io_bridge
         self.mission_executor = mission_executor
+        self.risk_engine = RiskAlertEngine()
+        self.current_risk = self.risk_engine.current
         self.selected, self.layout = 0, 1
         self.last_multi_layout = 2
         self.maps, self.tile_maps, self.drag_channel = {}, {}, None
@@ -2555,12 +3210,12 @@ class Dashboard:
                 return
             index = labels.index(slot)
             if stream:
-                source, ok = QInputDialog.getText(None, "스트림 추가", "RTSP / HTTP / YouTube 주소:")
+                source, ok = QInputDialog.getText(None, "스트림 추가", "RTSP / HTTP / YouTube 또는 gazebo:///safety/probe/image:")
                 if not ok:
                     return
                 source = source.strip()
-                if not source.startswith(("rtsp://", "rtsps://", "http://", "https://")):
-                    print("RTSP / HTTP / YouTube 주소를 입력해주세요.")
+                if not source.startswith(("rtsp://", "rtsps://", "http://", "https://", "gazebo://")):
+                    print("RTSP / HTTP / YouTube 또는 gazebo:///safety/probe/image를 입력해주세요.")
                     return
             else:
                 source, _ = QFileDialog.getOpenFileName(None, "영상 선택", str(ROOT / "videos"), "Video (*.mp4 *.mov *.avi *.mkv *.webm *.m4v);;All files (*)")
@@ -2722,8 +3377,8 @@ class Dashboard:
             return
 
         panel_w, panel_h = 300, 220
-        x2 = WIDTH - 18
-        y2 = HEIGHT - 45
+        x2 = getattr(self, "video_right", WIDTH) - 18
+        y2 = HEIGHT - FOOTER - 12
         x1 = max(8, x2 - panel_w)
         y1 = max(HEADER + 8, y2 - panel_h)
 
@@ -2974,6 +3629,127 @@ class Dashboard:
             self.floating_zoom = FloatingZoom(self.ensure_qt(), self.key_queue.append)
         if self.floating_zoom is not None:
             self.floating_zoom.update(image, f"Camera {c.number} - Area Zoom", (id(c), roi))
+    def draw_status_panel(self, canvas, telem, mission, safe_command, validation, adapter_result):
+        """Compact telemetry panel in 1 VIEW only; presentation does not control flight."""
+        if self.layout != 1:
+            return
+        left = self.video_right
+        right = WIDTH
+        top = HEADER
+        if right - left < 175:
+            return
+        bg, card = (28, 24, 19), (42, 36, 29)
+        white, muted = (240, 245, 247), (165, 171, 180)
+        green, red, yellow, cyan = (125, 222, 117), (105, 105, 255), (95, 210, 255), (245, 217, 120)
+        cv2.rectangle(canvas, (left, top), (right - 1, HEIGHT - 1), bg, -1)
+        cv2.line(canvas, (left, top), (left, HEIGHT), (85, 85, 90), 1)
+        def txt(text, x, y, scale=0.43, color=white, thick=1):
+            cv2.putText(canvas, str(text), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX,
+                        scale, color, thick, cv2.LINE_AA)
+        x, end = left + 12, right - 12
+        txt('DRONE STATUS', x, top + 25, 0.51, white, 2)
+        online = bool(telem.get('telemetry_connected')) and float(telem.get('telemetry_age_s', 999)) <= 5
+        source = str(telem.get('telemetry_source', 'SIM'))
+        waiting = source in ('PX4', 'UDP') and not telem.get('telemetry_ever_connected', False)
+        link_label = (f'{source} ONLINE' if online else
+                      f'{source} CONNECTING' if waiting else f'{source} LOST')
+        txt(link_label, x, top + 44, 0.38, green if online else yellow if waiting else red)
+        cv2.line(canvas, (x, top + 55), (end, top + 55), (70, 70, 75), 1)
+
+        # Tight line spacing; keep all fields within the 200-pixel column.
+        y = top + 78
+        def row(name, value, color=white):
+            nonlocal y
+            txt(name, x, y, 0.37, muted)
+            txt(value, end - min(105, max(55, len(str(value)) * 7)), y, 0.44, color, 1)
+            y += 39
+        battery = float(telem.get('battery', 0))
+        bc = red if battery <= BATTERY_RTH else yellow if battery <= BATTERY_WARN else green
+        row('BATTERY', f'{battery:.1f}%', bc)
+        mode = str(telem.get('flight_mode', 'UNKNOWN')).upper()
+        mode_short = {'RETURNING_HOME': 'RETURNING', 'RTH_REQUESTED': 'RTH REQUEST', 'LANDED': 'LANDED', 'LAND': 'LANDING'}.get(mode, mode)
+        if len(mode_short) > 12:
+            mode_short = mode_short[:12]
+        row('FLIGHT', mode_short, green if mode == 'LANDED' else yellow if mode in ('LAND', 'RETURNING_HOME', 'RTH_REQUESTED') else cyan)
+        cv2.line(canvas, (x, y-15), (end, y-15), (70, 70, 75), 1)
+        mission_name = str(mission.get('mission', 'UNKNOWN'))
+        status = str(mission.get('status', 'UNKNOWN'))
+        progress = max(0, min(100, int(mission.get('progress', 0))))
+        complete = mission_name == 'RTH' and status == 'COMPLETED' and mode == 'LANDED'
+        if source == "PX4":
+            seq = telem.get("px4_mission_seq")
+            total = telem.get("px4_mission_total")
+            reached = telem.get("px4_mission_reached")
+            px_state = str(telem.get("px4_mission_state", "UNKNOWN"))
+            # Mission item completion and vehicle flight mode are separate facts.
+            # Once MAVLink reports COMPLETE, later RTL heartbeats must not turn
+            # the bar back from 100% to a seq-based percentage.
+            items_done = bool(telem.get("px4_mission_items_complete")) or px_state == "COMPLETED"
+            # While still flying the early mission items, a previous completion
+            # must never paint the current mission as 100%.
+            if mode in ("MISSION", "AUTO.MISSION") and total and seq is not None and seq < total - 1:
+                items_done = False
+            if online and total and total > 0:
+                if items_done:
+                    progress = 100
+                elif seq is not None:
+                    # Approximate item index only, not distance/flight completion.
+                    progress = min(99, max(0, int(100 * min(seq, total) / total)))
+                else:
+                    progress = 0
+                display_seq = min(max(0, int(seq) + 1), total) if seq is not None else 0
+                short_status = f"PX4 {px_state} {display_seq}/{total}"
+            else:
+                progress = 0
+                short_status = f"PX4 {px_state} --/--"
+            # Color signifies completed mission items, not landed vehicle.
+            complete = items_done
+            mission_name = "PX4"
+        txt('PX4 MISSION' if source == "PX4" else 'RTH / MISSION', x, y + 1, 0.39, muted)
+        progress_label = '--' if source == 'PX4' and not (online and telem.get('px4_mission_total')) else f'{progress}%'
+        txt(progress_label, end - 47, y + 1, 0.49, green if complete else cyan, 2)
+        y += 19
+        if source != 'PX4':
+            short_status = 'RTH COMPLETE' if complete else f'{mission_name}:{status}'
+        txt(short_status[:22], x, y, 0.39, green if complete else white)
+        y += 12
+        cv2.rectangle(canvas, (x, y), (end, y+6), (65, 66, 70), -1)
+        if progress:
+            cv2.rectangle(canvas, (x, y), (x + round((end-x)*progress/100), y+6), green if complete else cyan, -1)
+        y += 38
+        coords = [telem.get(k) for k in ('lat','lon','home_lat','home_lon')]
+        if all(v is not None for v in coords):
+            lat, lon, home_lat, home_lon = map(float, coords)
+            dist = (((lat-home_lat)*111320)**2 + ((lon-home_lon)*111320*np.cos(np.radians(home_lat)))**2)**0.5
+            row('HOME', f'{dist:.1f}m', green)
+        else:
+            row('HOME', 'NOT SET', yellow)
+        altitude = telem.get('altitude_m')
+        row('ALT', f'{float(altitude):.1f}m' if altitude is not None else '--')
+        heading = telem.get('heading_deg')
+        row('HDG', f'{float(heading):.0f}deg' if heading is not None else '--')
+        row('CMD', str(safe_command.get('command', '--'))[:12], cyan)
+        if str(telem.get("telemetry_source")) == "PX4":
+            armed = telem.get("armed")
+            txt("ARMED: " + ("YES" if armed else "NO" if armed is False else "--"), x, y + 1, 0.40, yellow if armed else muted)
+            y += 24
+            txt("READ ONLY - NO FLIGHT COMMANDS", x, y + 1, 0.29, yellow)
+        else:
+            txt('ADAPTER: ' + str(adapter_result.get('adapter','--'))[:8], x, y + 2, 0.37, muted)
+
+        # Existing dashboard layout and typography remain unchanged.
+        risk = self.current_risk
+        level = risk.get("level", "NONE")
+        level_color = red if level == "HIGH" else yellow if level == "MEDIUM" else cyan if level == "LOW" else green
+        risk_y = max(y + 38, top + 510)
+        if risk_y + 50 < HEIGHT - FOOTER:
+            cv2.line(canvas, (x, risk_y - 15), (end, risk_y - 15), (70, 70, 75), 1)
+            txt("RISK", x, risk_y + 2, 0.40, muted)
+            txt(level, end - 72, risk_y + 2, 0.47, level_color, 1)
+            reason = ",".join(risk.get("reasons", [])) or "NONE"
+            txt(reason[:24], x, risk_y + 22, 0.33, level_color)
+            txt(risk.get("advice", "NORMAL")[:24], x, risk_y + 40, 0.32, muted)
+
     def draw(self):
         global WIDTH, HEIGHT
         if self.main_view is not None:
@@ -2981,18 +3757,20 @@ class Dashboard:
         canvas = np.full((HEIGHT, WIDTH, 3), 22, np.uint8)
         self.zoom()
         view_left = 0  # 안내판 없이 영상이 창 전체 너비를 사용
-        view_width = WIDTH - view_left
+        view_width = max(1, WIDTH - (200 if self.layout == 1 else 0) - view_left)
+        self.video_right = view_left + view_width
         c = self.channels[self.selected]
         self.io_bridge.poll_telemetry()
         self.telemetry.sim_heartbeat()
         self.safety.update(c)
         self.agent_state.update(self.channels)
         agent = self.agent_state.snapshot()
+        self.current_risk = self.risk_engine.evaluate(agent)
         decision = self.agent_engine.decide(agent)
         command = self.command_builder.build(decision, agent)
         validation = self.command_validator.validate(command, agent)
         safe_command = validation["safe_command"]
-        adapter_result = self.io_bridge.send_command(safe_command)
+        adapter_result = self.io_bridge.send_command(safe_command, agent["drone"])
         telem = self.telemetry.snapshot()
         mission = self.mission_executor.update(
             safe_command,
@@ -3004,18 +3782,18 @@ class Dashboard:
         )
         cv2.rectangle(canvas, (WIDTH - 145, 40), (WIDTH - 10, 65), (95, 75, 30), -1)
         full_text = "WINDOW [F]" if self.main_view is not None and self.main_view.is_fullscreen() else "FULL [F]"
-        cv2.putText(canvas, full_text, (WIDTH - 136, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, getattr(cv2, "LINE_AA", 16))
+        cv2.putText(canvas, full_text, (WIDTH - 136, 58), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255), 1, getattr(cv2, "LINE_AA", 16))
         for index, name in enumerate(TOOLS):
             left = 10 + index * 105
             color = (0, 150, 0) if c.mode == name else (65, 65, 65)
             cv2.rectangle(canvas, (left, 5), (left + 100, 35), color, -1)
-            cv2.putText(canvas, name, (left + 8, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            cv2.putText(canvas, name, (left + 8, 27), cv2.FONT_HERSHEY_DUPLEX, 0.55, (255, 255, 255), 1)
         for index, layout in enumerate((1, 2, 4)):
             left = 570 + index * 90
             cv2.rectangle(canvas, (left, 5), (left + 82, 35), (120, 90, 0) if self.layout == layout else (65, 65, 65), -1)
-            cv2.putText(canvas, f"{layout} VIEW", (left + 7, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1)
+            cv2.putText(canvas, f"{layout} VIEW", (left + 7, 27), cv2.FONT_HERSHEY_DUPLEX, 0.48, (255, 255, 255), 1)
         cv2.rectangle(canvas, (840, 5), (945, 35), (120, 90, 0) if self.layout not in (1, 2, 4) else (65, 65, 65), -1)
-        cv2.putText(canvas, f"VIEW:{self.layout}", (850, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1)
+        cv2.putText(canvas, f"VIEW:{self.layout}", (850, 27), cv2.FONT_HERSHEY_DUPLEX, 0.52, (255, 255, 255), 1)
         gps_text = "GPS:--" if telem["lat"] is None or telem["lon"] is None else f"GPS:{telem['lat']:.5f},{telem['lon']:.5f}"
         home_text = "HOME:--" if telem["home_lat"] is None or telem["home_lon"] is None else f"HOME:{telem['home_lat']:.5f},{telem['home_lon']:.5f}"
 
@@ -3030,8 +3808,13 @@ class Dashboard:
             battery_state = "OK"
 
         fire_state = "ON" if c.show_fire_smoke else "OFF"
-        tel_state = telem["telemetry_source"] if telem["telemetry_connected"] else f"{telem['telemetry_source']}:OFF"
-        profile_key = telem["drone_profile"]["key"].replace("SKYDIO_", "").replace("_REF", "")
+        tel_source = str(telem["telemetry_source"])
+        tel_fresh = bool(telem["telemetry_connected"]) and float(telem.get("telemetry_age_s", 999)) <= 5.0
+        tel_state = (tel_source if tel_fresh else
+                     f"{tel_source}:WAIT" if tel_source in ("PX4", "UDP") and not telem.get("telemetry_ever_connected", False)
+                     else f"{tel_source}:LOST")
+        profile_key = ("PX4-SITL-X500" if telem.get("telemetry_source") == "PX4" else
+                       telem["drone_profile"]["key"].replace("SKYDIO_", "").replace("_REF", ""))
         agent_text = "READY" if agent["ready"] else "WAIT"
         action_text = decision["primary_action"]
         active_events = agent["active_events"]
@@ -3053,7 +3836,7 @@ class Dashboard:
             f"Cam:{c.number} | Tool:{c.mode} | SITE:{c.site_mode} | FIRE:{fire_state} | "
             f"BAT:{battery:.1f}%[{battery_state}] | {gps_short} | {home_short} | "
             f"ALT:{alt_text} | HDG:{hdg_text} | TEL:{tel_state} | X10:{profile_key} | {telem['flight_mode']}",
-            (10, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1
+            (10, 58), cv2.FONT_HERSHEY_DUPLEX, 0.38, (0, 255, 255), 1
         )
         if battery_state != "OK":
             warning_text = {
@@ -3065,7 +3848,7 @@ class Dashboard:
                 canvas,
                 warning_text,
                 (WIDTH - 430, 58),
-                cv2.FONT_HERSHEY_SIMPLEX,
+                cv2.FONT_HERSHEY_DUPLEX,
                 0.48,
                 (0, 0, 255),
                 2,
@@ -3083,7 +3866,7 @@ class Dashboard:
                 canvas,
                 rth_text,
                 (WIDTH - 250, 88),
-                cv2.FONT_HERSHEY_SIMPLEX,
+                cv2.FONT_HERSHEY_DUPLEX,
                 0.55,
                 (0, 0, 255) if flight_mode != "LAND" else (0, 255, 255),
                 2,
@@ -3091,7 +3874,7 @@ class Dashboard:
 
         for text, left, right in (("ADD FILE [O]", 950, 1095), ("ADD URL [U]", 1105, 1270)):
             cv2.rectangle(canvas, (left, 5), (right, 35), (100, 85, 25), -1)
-            cv2.putText(canvas, text, (left + 8, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(canvas, text, (left + 8, 27), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255), 1)
         visible = [self.selected] if self.layout == 1 else list(range(self.layout))
         cols, rows = self.grid_shape(self.layout)
         cell_w, cell_h = view_width // cols, (HEIGHT - HEADER - FOOTER) // rows
@@ -3101,7 +3884,7 @@ class Dashboard:
             left, top = view_left + (position % cols) * cell_w, HEADER + (position // cols) * cell_h
             self.tile_maps[index] = (left, top, cell_w, cell_h)
             if index >= len(self.channels):
-                cv2.putText(canvas, f"Camera {index + 1}: No source", (left + 20, top + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (150, 150, 150), 1)
+                cv2.putText(canvas, f"Camera {index + 1}: No source", (left + 20, top + 40), cv2.FONT_HERSHEY_DUPLEX, 0.7, (150, 150, 150), 1)
                 continue
             channel = self.channels[index]
             raw, image, objects = live_snapshot(channel)
@@ -3115,7 +3898,7 @@ class Dashboard:
                 stats = f"Cam {channel.number} | P:{people} V:{vehicles} | RX:{receive_fps:.1f} AI:{ai_fps:.1f} | {channel.status}"
             if image is None:
                 image = np.full((360, 640, 3), 25, np.uint8)
-                cv2.putText(image, f"Camera {channel.number}: {channel.status}", (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+                cv2.putText(image, f"Camera {channel.number}: {channel.status}", (20, 180), cv2.FONT_HERSHEY_DUPLEX, 0.7, (200, 200, 200), 1)
             else:
                 image = image.copy()
                 # DANGER 영역은 계속 표시하지만,
@@ -3137,7 +3920,7 @@ class Dashboard:
                 inset = cv2.resize(crop, (inset_w, inset_h), interpolation=cv2.INTER_CUBIC)  # 원래 320×240 미리보기 방식
                 blurred = cv2.GaussianBlur(inset, (0, 0), 1.0)
                 inset = cv2.addWeighted(inset, 1.5, blurred, -0.5, 0)
-                cv2.putText(inset, caption, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+                cv2.putText(inset, caption, (8, 24), cv2.FONT_HERSHEY_DUPLEX, 0.6, (0, 255, 255), 1)
                 ix, iy = ox + nw - inset_w - 8, oy + nh - inset_h - 8
                 tile[iy:iy + inset_h, ix:ix + inset_w] = inset
                 cv2.rectangle(tile, (ix, iy), (ix + inset_w - 1, iy + inset_h - 1), (0, 255, 255), 2)
@@ -3145,7 +3928,7 @@ class Dashboard:
             if raw is not None:
                 fh, fw = raw.shape[:2]
                 self.maps[index] = left + ox, top + oy, nw, nh, fw, fh
-            cv2.putText(canvas, stats, (left + 6, top + cell_h - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (235, 235, 235), 1)
+            cv2.putText(canvas, stats, (left + 6, top + cell_h - 9), cv2.FONT_HERSHEY_DUPLEX, 0.42, (235, 235, 235), 1)
             cv2.rectangle(canvas, (left + 1, top + 1), (left + cell_w - 2, top + cell_h - 2), (0, 255, 180) if index == self.selected else (80, 80, 80), 2)
         # 긴 Agent/Telemetry 정보는 영상과 겹치지 않도록 전용 하단 상태바에 표시한다.
         footer_top = HEIGHT - FOOTER
@@ -3186,23 +3969,51 @@ class Dashboard:
             f"TEL:{tel_state} | DRONE:{profile_key} | FLIGHT:{telem['flight_mode']}"
         )
 
-        cv2.putText(
-            canvas, agent_line, (10, footer_top + 21),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1,
-            getattr(cv2, "LINE_AA", 16)
-        )
-        cv2.putText(
-            canvas, telemetry_line, (10, footer_top + 43),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.39, (220, 220, 220), 1,
-            getattr(cv2, "LINE_AA", 16)
-        )
+        # 창 너비에 맞춰 하단 상태 정보를 자동 줄바꿈한다.
+        # 긴 PX4/Agent/Telemetry 텍스트를 잘라내지 않고 모든 정보를 보존한다.
+        def wrap_status(text, scale, max_width):
+            pieces = text.split(" | ")
+            lines = []
+            current = ""
+            font = cv2.FONT_HERSHEY_DUPLEX
+            for piece in pieces:
+                candidate = f"{current} | {piece}" if current else piece
+                if cv2.getTextSize(candidate, font, scale, 1)[0][0] <= max_width:
+                    current = candidate
+                    continue
+                if current:
+                    lines.append(current)
+                    current = ""
+                # Extremely long single field: wrap on characters instead of clipping.
+                for char in piece:
+                    candidate = current + char
+                    if current and cv2.getTextSize(candidate, font, scale, 1)[0][0] > max_width:
+                        lines.append(current)
+                        current = char
+                    else:
+                        current = candidate
+            if current:
+                lines.append(current)
+            return lines
+
+        max_text_width = max(100, WIDTH - 22)
+        agent_rows = wrap_status(agent_line, 0.42, max_text_width)
+        telemetry_rows = wrap_status(telemetry_line, 0.39, max_text_width)
+        text_rows = ([(line, 0.42, (0, 255, 255)) for line in agent_rows]
+                     + [(line, 0.39, (220, 220, 220)) for line in telemetry_rows])
+        # The footer occupies 75 px by default. Fit any additional rows inside
+        # the available area without dropping telemetry fields.
+        line_height = min(20, max(11, (FOOTER - 12) // max(1, len(text_rows))))
+        for i, (line, scale, color) in enumerate(text_rows):
+            cv2.putText(canvas, line, (10, footer_top + 17 + i * line_height),
+                        cv2.FONT_HERSHEY_DUPLEX, scale, color, 1, cv2.LINE_AA)
 
         if self.analyzer.error:
             cv2.putText(
                 canvas,
                 "AI ERROR - See terminal",
-                (WIDTH - 210, footer_top + 43),
-                cv2.FONT_HERSHEY_SIMPLEX,
+                (max(10, self.video_right - 210), footer_top + 43),
+                cv2.FONT_HERSHEY_DUPLEX,
                 0.40,
                 (0, 0, 255),
                 1,
@@ -3210,6 +4021,7 @@ class Dashboard:
 
         event_manager = c.event_manager if c is not None else None
         self.draw_gps_map(canvas, telem, event_manager)
+        self.draw_status_panel(canvas, telem, mission, safe_command, validation, adapter_result)
 
         if self.main_view is None:
             self.ensure_qt()
@@ -3220,7 +4032,7 @@ class Dashboard:
 
 def main():
     parser = argparse.ArgumentParser(description="드론 안전 관제 트래커: 최대 16개 카메라 슬롯")
-    parser.add_argument("sources", nargs="*", help="영상 파일, RTSP/HTTP/YouTube 주소 또는 카메라 번호 (최대 16개)")
+    parser.add_argument("sources", nargs="*", help="영상 파일, RTSP/HTTP/YouTube, gazebo:///safety/probe/image 또는 카메라 번호 (최대 16개)")
     parser.add_argument("--device", default="mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--no-ppe", action="store_true", help="PPE 검사 끄기 (원거리 영상용, P키로 개별 전환)")
     parser.add_argument("--battery", type=float, default=100.0, help="PX4 연동 전 테스트용 배터리 퍼센트")
@@ -3236,9 +4048,32 @@ def main():
     )
     parser.add_argument(
         "--flight-adapter",
-        choices=("SIM", "PX4", "ROS2", "SKYDIO"),
+        choices=("SIM", "UDP", "PX4", "ROS2", "SKYDIO"),
         default="SIM",
         help="비행 명령 출력 어댑터. 실제 기체 미연결 시 SIM 사용",
+    )
+    parser.add_argument("--px4-telemetry-port", type=int, default=14540,
+                        help="PX4 SITL MAVLink 수신 포트 (localhost, 기본 14540, 수신 전용)")
+    parser.add_argument(
+        "--udp-host",
+        default="127.0.0.1",
+        help="UDP 명령 전송 대상 호스트 (기본 localhost)",
+    )
+    parser.add_argument(
+        "--udp-telemetry-port",
+        type=int,
+        default=14560,
+        help="UDP 텔레메트리 수신 포트",
+    )
+    parser.add_argument(
+        "--udp-command-port",
+        type=int,
+        default=14561,
+        help="UDP 명령 전송 포트",
+    )
+    parser.add_argument(
+        "--smoke-camera-yaw-offset", type=float, default=None,
+        help="이벤트 로그용 연기 추정 방위 보정값(도). 화면의 연기 나침반은 항상 화면 기준으로 표시",
     )
     args = parser.parse_args()
     sources = args.sources or ["https://www.youtube.com/watch?v=C3hW1VrwmNc"]
@@ -3257,6 +4092,13 @@ def main():
         args.home_lon,
         drone_profile=drone_profile,
     )
+    # UDP mode must not pretend SIM telemetry is connected before the first packet.
+    if args.flight_adapter in ("UDP", "PX4"):
+        with telemetry.lock:
+            telemetry.telemetry_source = args.flight_adapter
+            telemetry.telemetry_connected = False
+            telemetry.telemetry_ever_connected = False
+            telemetry.telemetry_last_update = time.monotonic() - 60.0
     telemetry_input = TelemetryInputAdapter(telemetry)
     print(
         f"[DRONE PROFILE] {drone_profile.display_name} | "
@@ -3277,13 +4119,30 @@ def main():
         for i in range(MAX_CAMERAS)
     ]
     analyzer = Analyzer(channels, args.device)
+    analyzer.smoke_camera_yaw_offset = args.smoke_camera_yaw_offset
+    if args.smoke_camera_yaw_offset is not None:
+        print(f"[SMOKE BEARING] Heading estimate ON | camera yaw offset={args.smoke_camera_yaw_offset:.1f} deg | CALIBRATION REQUIRED, NOT WIND")
+    else:
+        print("[SMOKE BEARING] SCREEN ONLY | enable heading estimate using --smoke-camera-yaw-offset (calibrated camera only)")
     safety = SafetyController(telemetry, event_manager)
     agent_state = AgentState(telemetry)
     agent_engine = AgentDecisionEngine()
     command_builder = DroneCommandBuilder()
     command_validator = CommandSafetyValidator()
-    flight_adapter = create_flight_adapter(args.flight_adapter)
-    io_bridge = DroneIOBridge(telemetry_input, flight_adapter)
+    flight_adapter = create_flight_adapter(
+        args.flight_adapter,
+        udp_host=args.udp_host,
+        udp_command_port=args.udp_command_port,
+    )
+    io_bridge = DroneIOBridge(
+        telemetry_input,
+        flight_adapter,
+        udp_telemetry_port=args.udp_telemetry_port,
+    )
+    px4_receiver = None
+    if args.flight_adapter == "PX4":
+        px4_receiver = Px4TelemetryReceiver(telemetry_input, port=args.px4_telemetry_port)
+        px4_receiver.start()
     mission_executor = MissionExecutor()
     dashboard = Dashboard(
         channels,
@@ -3304,10 +4163,17 @@ def main():
     print("[SAFETY VALIDATOR] Command safety validation -> READY")
     if args.flight_adapter == "SIM":
         print("[FLIGHT ADAPTER] SIM adapter -> READY (ACK only / no real drone control)")
+    elif args.flight_adapter == "UDP":
+        print(
+            f"[FLIGHT ADAPTER] UDP -> READY | "
+            f"telemetry=127.0.0.1:{args.udp_telemetry_port} | "
+            f"commands={args.udp_host}:{args.udp_command_port}"
+        )
     else:
         print(
-            f"[FLIGHT ADAPTER] {args.flight_adapter} adapter -> STUB "
-            "(interface ready / real connection not implemented)"
+            f"[FLIGHT ADAPTER] {args.flight_adapter} -> "
+            + ("READ-ONLY MAVLink telemetry / NO COMMANDS" if args.flight_adapter == "PX4"
+               else "STUB (interface ready / real connection not implemented)")
         )
     print(
         f"[DRONE IO] INPUT={io_bridge.input_source} | "
@@ -3404,6 +4270,10 @@ def main():
             dashboard.floating_zoom.close()
         if dashboard.main_view is not None:
             dashboard.main_view.close()
+        if px4_receiver is not None:
+            px4_receiver.stop_event.set()
+            px4_receiver.join(timeout=2.0)
+        io_bridge.close()
 
 if __name__ == "__main__":
     main()

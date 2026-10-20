@@ -1,0 +1,23 @@
+{
+  "models/industrial_worker/meshes/worker.glb": {
+    "title": "Drew construction worker with hard hat and hi-vis",
+    "author": "Innerscene, adapted from MakeHuman/MPFB CC0 assets",
+    "license": "CC0-1.0",
+    "source": "https://www.innerscene.com/tools/library/3d-parts/drew-3d-person-construction-worker-with-hard-hat-and-hi-vis-a4aa98af",
+    "terms": "https://www.innerscene.com/tools/library/terms",
+    "url": "https://www.innerscene.com/api/library/drew-3d-person-construction-worker-with-hard-hat-and-hi-vis-a4aa98af/download",
+    "path": "models/industrial_worker/meshes/worker.glb",
+    "sha256": "4c488d3d7c764e88c48eba0b2ce08bd4d2c76593329667ced0cb7d90ba8ca090",
+    "downloaded_at": "2026-10-19T10:30:15.474513+00:00",
+    "metrics": {
+      "triangles_in_mesh_definitions": 53069,
+      "primitives": 13,
+      "images": 12,
+      "materials": 11,
+      "skins": 0,
+      "animations": 0,
+      "bytes": 23941828,
+      "render_verified": false
+    }
+  }
+}

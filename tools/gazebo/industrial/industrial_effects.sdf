@@ -1,0 +1,3441 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.9">
+  <world name="x500_camera">
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics" />
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands" />
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster" />
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu" />
+    <plugin filename="gz-sim-air-pressure-system" name="gz::sim::systems::AirPressure" />
+    <plugin filename="gz-sim-magnetometer-system" name="gz::sim::systems::Magnetometer" />
+    <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat" />
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic" />
+    <scene>
+      <grid>false</grid>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>true</shadows>
+    </scene>
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1 1</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode />
+            </friction>
+            <bounce />
+            <contact />
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/ground.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+                <albedo_map>model://industrial_materials/materials/textures/concrete_diff.jpg</albedo_map>
+                <normal_map>model://industrial_materials/materials/textures/concrete_normal.jpg</normal_map>
+                <roughness_map>model://industrial_materials/materials/textures/concrete_rough.jpg</roughness_map>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <pose>0 0 0 0 -0 0</pose>
+        <inertial>
+          <pose>0 0 0 0 -0 0</pose>
+          <mass>1</mass>
+          <inertia>
+            <ixx>1</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>1</iyy>
+            <iyz>0</iyz>
+            <izz>1</izz>
+          </inertia>
+        </inertial>
+        <enable_wind>false</enable_wind>
+      </link>
+      <pose>0 0 0 0 -0 0</pose>
+      <self_collide>false</self_collide>
+    </model>
+    <light name="sunUTC" type="directional">
+      <pose>0 0 500 0 -0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>1</intensity>
+      <direction>0.001 0.625 -0.78</direction>
+      <diffuse>0.904 0.904 0.904 1</diffuse>
+      <specular>0.271 0.271 0.271 1</specular>
+      <attenuation>
+        <range>2000</range>
+        <linear>0</linear>
+        <constant>1</constant>
+        <quadratic>0</quadratic>
+      </attenuation>
+      <spot>
+        <inner_angle>0</inner_angle>
+        <outer_angle>0</outer_angle>
+        <falloff>0</falloff>
+      </spot>
+    </light>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>47.397971057728974</latitude_deg>
+      <longitude_deg> 8.546163739800146</longitude_deg>
+      <elevation>488</elevation>
+    </spherical_coordinates>
+    <include>
+      <uri>model://x500_mono_cam</uri>
+      <name>x500_mono_cam_0</name>
+      <pose>0 0 0.3 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://industrial_worker</uri>
+      <name>industrial_worker_01</name>
+      <pose>8 0 0 0 0 0</pose>
+    </include>
+    <model name="factory">
+      <static>true</static>
+      <pose>17 12 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="foundation">
+          <pose>0 0 0.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>22.6 9.6 0.3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.47 0.46 0.43 1</ambient>
+            <diffuse>0.47 0.46 0.43 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="foundation_collision">
+          <pose>0 0 0.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>22.6 9.6 0.3</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="shell">
+          <pose>0 0 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>22 9 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.38 0.43 0.46 1</ambient>
+            <diffuse>0.38 0.43 0.46 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.35</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="shell_collision">
+          <pose>0 0 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>22 9 6</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="roof_-1">
+          <pose>0 -2.25 6.15 0.1 0 0</pose>
+          <geometry>
+            <box>
+              <size>22.7 5.0 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.65</metalness>
+                <roughness>0.55</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="roof_1">
+          <pose>0 2.25 6.15 -0.1 0 0</pose>
+          <geometry>
+            <box>
+              <size>22.7 5.0 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.65</metalness>
+                <roughness>0.55</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_0">
+          <pose>-11.0 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_1">
+          <pose>-10.35 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_2">
+          <pose>-9.7 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_3">
+          <pose>-9.05 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_4">
+          <pose>-8.4 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_5">
+          <pose>-7.75 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_6">
+          <pose>-7.1 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_7">
+          <pose>-6.45 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_8">
+          <pose>-5.8 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_9">
+          <pose>-5.1499999999999995 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_10">
+          <pose>-4.5 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_11">
+          <pose>-3.8499999999999996 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_12">
+          <pose>-3.1999999999999993 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_13">
+          <pose>-2.549999999999999 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_14">
+          <pose>-1.9000000000000004 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_15">
+          <pose>-1.25 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_16">
+          <pose>-0.5999999999999996 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_17">
+          <pose>0.05000000000000071 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_18">
+          <pose>0.7000000000000011 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_19">
+          <pose>1.3499999999999996 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_20">
+          <pose>2.0 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_21">
+          <pose>2.6500000000000004 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_22">
+          <pose>3.3000000000000007 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_23">
+          <pose>3.950000000000001 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_24">
+          <pose>4.600000000000001 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_25">
+          <pose>5.25 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_26">
+          <pose>5.900000000000002 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_27">
+          <pose>6.550000000000001 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_28">
+          <pose>7.199999999999999 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_29">
+          <pose>7.850000000000001 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_30">
+          <pose>8.5 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_31">
+          <pose>9.150000000000002 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_32">
+          <pose>9.8 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_33">
+          <pose>10.45 -4.535 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="loading_frame_0">
+          <pose>-5.5 -4.59 1.85 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.4 0.12 3.7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.5</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="loading_door_0">
+          <pose>-5.5 -4.67 1.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.1 0.08 3.4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.56 0.59 0.60 1</ambient>
+            <diffuse>0.56 0.59 0.60 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.5</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_0">
+          <pose>-5.5 -4.72 0.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_1">
+          <pose>-5.5 -4.72 0.43999999999999995 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_2">
+          <pose>-5.5 -4.72 0.73 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_3">
+          <pose>-5.5 -4.72 1.0199999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_4">
+          <pose>-5.5 -4.72 1.3099999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_5">
+          <pose>-5.5 -4.72 1.5999999999999999 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_6">
+          <pose>-5.5 -4.72 1.8899999999999997 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_7">
+          <pose>-5.5 -4.72 2.1799999999999997 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_8">
+          <pose>-5.5 -4.72 2.4699999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_9">
+          <pose>-5.5 -4.72 2.76 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_10">
+          <pose>-5.5 -4.72 3.05 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_11">
+          <pose>-5.5 -4.72 3.34 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="window_0">
+          <pose>-5.5 -4.73 5.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.7 0.025 0.55</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.23 0.29 1</ambient>
+            <diffuse>0.12 0.23 0.29 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.25</metalness>
+                <roughness>0.23</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="loading_frame_1">
+          <pose>5.5 -4.59 1.85 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.4 0.12 3.7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.5</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="loading_door_1">
+          <pose>5.5 -4.67 1.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.1 0.08 3.4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.56 0.59 0.60 1</ambient>
+            <diffuse>0.56 0.59 0.60 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.5</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_0">
+          <pose>5.5 -4.72 0.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_1">
+          <pose>5.5 -4.72 0.43999999999999995 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_2">
+          <pose>5.5 -4.72 0.73 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_3">
+          <pose>5.5 -4.72 1.0199999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_4">
+          <pose>5.5 -4.72 1.3099999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_5">
+          <pose>5.5 -4.72 1.5999999999999999 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_6">
+          <pose>5.5 -4.72 1.8899999999999997 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_7">
+          <pose>5.5 -4.72 2.1799999999999997 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_8">
+          <pose>5.5 -4.72 2.4699999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_9">
+          <pose>5.5 -4.72 2.76 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_10">
+          <pose>5.5 -4.72 3.05 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_11">
+          <pose>5.5 -4.72 3.34 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="window_1">
+          <pose>5.5 -4.73 5.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.7 0.025 0.55</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.23 0.29 1</ambient>
+            <diffuse>0.12 0.23 0.29 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.25</metalness>
+                <roughness>0.23</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="column_-1">
+          <pose>-10.9 -4.63 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.18 0.2 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.6</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="column_1">
+          <pose>10.9 -4.63 3.0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.18 0.2 6</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.6</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="warehouse">
+      <static>true</static>
+      <pose>17 -13 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="foundation">
+          <pose>0 0 0.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>18.6 8.6 0.3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.47 0.46 0.43 1</ambient>
+            <diffuse>0.47 0.46 0.43 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="foundation_collision">
+          <pose>0 0 0.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>18.6 8.6 0.3</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="shell">
+          <pose>0 0 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>18 8 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.38 0.43 0.46 1</ambient>
+            <diffuse>0.38 0.43 0.46 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.35</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="shell_collision">
+          <pose>0 0 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>18 8 5</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="roof_-1">
+          <pose>0 -2.0 5.15 0.1 0 0</pose>
+          <geometry>
+            <box>
+              <size>18.7 4.5 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.65</metalness>
+                <roughness>0.55</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="roof_1">
+          <pose>0 2.0 5.15 -0.1 0 0</pose>
+          <geometry>
+            <box>
+              <size>18.7 4.5 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.65</metalness>
+                <roughness>0.55</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_0">
+          <pose>-9.0 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_1">
+          <pose>-8.35 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_2">
+          <pose>-7.7 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_3">
+          <pose>-7.05 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_4">
+          <pose>-6.4 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_5">
+          <pose>-5.75 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_6">
+          <pose>-5.1 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_7">
+          <pose>-4.45 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_8">
+          <pose>-3.8 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_9">
+          <pose>-3.1499999999999995 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_10">
+          <pose>-2.5 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_11">
+          <pose>-1.8499999999999996 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_12">
+          <pose>-1.1999999999999993 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_13">
+          <pose>-0.5499999999999989 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_14">
+          <pose>0.09999999999999964 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_15">
+          <pose>0.75 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_16">
+          <pose>1.4000000000000004 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_17">
+          <pose>2.0500000000000007 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_18">
+          <pose>2.700000000000001 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_19">
+          <pose>3.3499999999999996 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_20">
+          <pose>4.0 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_21">
+          <pose>4.65 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_22">
+          <pose>5.300000000000001 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_23">
+          <pose>5.950000000000001 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_24">
+          <pose>6.600000000000001 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_25">
+          <pose>7.25 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_26">
+          <pose>7.900000000000002 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="cladding_27">
+          <pose>8.55 -4.035 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.045 0.08 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.46 0.50 0.52 1</ambient>
+            <diffuse>0.46 0.50 0.52 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.45</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="loading_frame_0">
+          <pose>-4.5 -4.09 1.85 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.4 0.12 3.7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.5</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="loading_door_0">
+          <pose>-4.5 -4.17 1.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.1 0.08 3.4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.56 0.59 0.60 1</ambient>
+            <diffuse>0.56 0.59 0.60 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.5</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_0">
+          <pose>-4.5 -4.22 0.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_1">
+          <pose>-4.5 -4.22 0.43999999999999995 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_2">
+          <pose>-4.5 -4.22 0.73 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_3">
+          <pose>-4.5 -4.22 1.0199999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_4">
+          <pose>-4.5 -4.22 1.3099999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_5">
+          <pose>-4.5 -4.22 1.5999999999999999 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_6">
+          <pose>-4.5 -4.22 1.8899999999999997 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_7">
+          <pose>-4.5 -4.22 2.1799999999999997 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_8">
+          <pose>-4.5 -4.22 2.4699999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_9">
+          <pose>-4.5 -4.22 2.76 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_10">
+          <pose>-4.5 -4.22 3.05 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_0_11">
+          <pose>-4.5 -4.22 3.34 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="window_0">
+          <pose>-4.5 -4.23 4.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.7 0.025 0.55</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.23 0.29 1</ambient>
+            <diffuse>0.12 0.23 0.29 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.25</metalness>
+                <roughness>0.23</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="loading_frame_1">
+          <pose>4.5 -4.09 1.85 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.4 0.12 3.7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.5</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="loading_door_1">
+          <pose>4.5 -4.17 1.75 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.1 0.08 3.4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.56 0.59 0.60 1</ambient>
+            <diffuse>0.56 0.59 0.60 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.5</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_0">
+          <pose>4.5 -4.22 0.15 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_1">
+          <pose>4.5 -4.22 0.43999999999999995 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_2">
+          <pose>4.5 -4.22 0.73 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_3">
+          <pose>4.5 -4.22 1.0199999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_4">
+          <pose>4.5 -4.22 1.3099999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_5">
+          <pose>4.5 -4.22 1.5999999999999999 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_6">
+          <pose>4.5 -4.22 1.8899999999999997 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_7">
+          <pose>4.5 -4.22 2.1799999999999997 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_8">
+          <pose>4.5 -4.22 2.4699999999999998 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_9">
+          <pose>4.5 -4.22 2.76 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_10">
+          <pose>4.5 -4.22 3.05 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="door_seam_1_11">
+          <pose>4.5 -4.22 3.34 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3.05 0.02 0.018</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="window_1">
+          <pose>4.5 -4.23 4.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>2.7 0.025 0.55</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.23 0.29 1</ambient>
+            <diffuse>0.12 0.23 0.29 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.25</metalness>
+                <roughness>0.23</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="column_-1">
+          <pose>-8.9 -4.13 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.18 0.2 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.6</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="column_1">
+          <pose>8.9 -4.13 2.5 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.18 0.2 5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.14 0.18 0.2 1</ambient>
+            <diffuse>0.14 0.18 0.2 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.6</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="fence_6_-6">
+      <static>true</static>
+      <pose>6 -6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_9_-6">
+      <static>true</static>
+      <pose>9 -6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_12_-6">
+      <static>true</static>
+      <pose>12 -6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_15_-6">
+      <static>true</static>
+      <pose>15 -6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_18_-6">
+      <static>true</static>
+      <pose>18 -6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_21_-6">
+      <static>true</static>
+      <pose>21 -6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_6_6">
+      <static>true</static>
+      <pose>6 6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_9_6">
+      <static>true</static>
+      <pose>9 6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_12_6">
+      <static>true</static>
+      <pose>12 6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_15_6">
+      <static>true</static>
+      <pose>15 6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_18_6">
+      <static>true</static>
+      <pose>18 6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="fence_21_6">
+      <static>true</static>
+      <pose>21 6 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="steel_panel">
+          <geometry>
+            <mesh>
+              <uri>model://industrial_materials/meshes/fence.obj</uri>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.36 0.39 0.38 1</ambient>
+            <diffuse>0.36 0.39 0.38 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0.75</metalness>
+                <roughness>0.5</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="panel_collision">
+          <pose>0 0 1.1 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>3 0.06 2.2</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="yard_markings">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="line_-4.8">
+          <pose>14 -4.8 0.003 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>24 0.12 0.004</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.84 0.68 0.12 1</ambient>
+            <diffuse>0.84 0.68 0.12 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="line_4.8">
+          <pose>14 4.8 0.003 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>24 0.12 0.004</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.84 0.68 0.12 1</ambient>
+            <diffuse>0.84 0.68 0.12 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="loading_pallet_0">
+      <static>true</static>
+      <pose>18.0 -4 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="load">
+          <pose>0 0 0.65 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.1 0.85 1.2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.46 0.30 1</ambient>
+            <diffuse>0.55 0.46 0.30 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="load_collision">
+          <pose>0 0 0.65 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.1 0.85 1.2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="strap_0.2">
+          <pose>0 0 0.2 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="strap_0.7">
+          <pose>0 0 0.7 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="strap_1.2">
+          <pose>0 0 1.2 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="loading_pallet_1">
+      <static>true</static>
+      <pose>19.4 -4 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="load">
+          <pose>0 0 0.65 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.1 0.85 1.2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.46 0.30 1</ambient>
+            <diffuse>0.55 0.46 0.30 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="load_collision">
+          <pose>0 0 0.65 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.1 0.85 1.2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="strap_0.2">
+          <pose>0 0 0.2 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="strap_0.7">
+          <pose>0 0 0.7 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="strap_1.2">
+          <pose>0 0 1.2 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="loading_pallet_2">
+      <static>true</static>
+      <pose>20.8 -4 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="load">
+          <pose>0 0 0.65 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.1 0.85 1.2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.46 0.30 1</ambient>
+            <diffuse>0.55 0.46 0.30 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="load_collision">
+          <pose>0 0 0.65 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.1 0.85 1.2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="strap_0.2">
+          <pose>0 0 0.2 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="strap_0.7">
+          <pose>0 0 0.7 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="strap_1.2">
+          <pose>0 0 1.2 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="loading_pallet_3">
+      <static>true</static>
+      <pose>22.2 -4 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="load">
+          <pose>0 0 0.65 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.1 0.85 1.2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.46 0.30 1</ambient>
+            <diffuse>0.55 0.46 0.30 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="load_collision">
+          <pose>0 0 0.65 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.1 0.85 1.2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="strap_0.2">
+          <pose>0 0 0.2 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="strap_0.7">
+          <pose>0 0 0.7 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <visual name="strap_1.2">
+          <pose>0 0 1.2 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.13 0.88 0.035</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.21 0.20 1</ambient>
+            <diffuse>0.18 0.21 0.20 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <plugin filename="gz-sim-particle-emitter-system" name="gz::sim::systems::ParticleEmitter" />
+    <model name="industrial_fire">
+      <static>true</static>
+      <pose>13 3 0 0 -1.57079632679 0</pose>
+      <link name="structure">
+        <particle_emitter name="smoke" type="box">
+          <pose>-0.3 0 0 0 0 0</pose>
+          <emitting>true</emitting>
+          <size>0.35 0.45 0.45</size>
+          <particle_size>0.55 0.55 0.55</particle_size>
+          <rate>12</rate>
+          <lifetime>8</lifetime>
+          <min_velocity>0.65</min_velocity>
+          <max_velocity>0.8500000000000001</max_velocity>
+          <scale_rate>0.16</scale_rate>
+          <color_start>0.28 0.29 0.30 0.65</color_start>
+          <color_end>0.48 0.49 0.50 0</color_end>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>1</roughness>
+                <albedo_map>model://industrial_materials/materials/textures/smoke.png</albedo_map>
+              </metal>
+            </pbr>
+          </material>
+        </particle_emitter>
+        <particle_emitter name="flame" type="box">
+          <pose>-0.3 0 0 0 0 0</pose>
+          <emitting>true</emitting>
+          <size>0.35 0.45 0.45</size>
+          <particle_size>0.3 0.3 0.3</particle_size>
+          <rate>24</rate>
+          <lifetime>1.5</lifetime>
+          <min_velocity>0.75</min_velocity>
+          <max_velocity>0.95</max_velocity>
+          <scale_rate>0.1</scale_rate>
+          <color_start>1 0.8 0.18 0.95</color_start>
+          <color_end>0.8 0.12 0.01 0</color_end>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>1</roughness>
+                <albedo_map>model://industrial_materials/materials/textures/flame.png</albedo_map>
+              </metal>
+            </pbr>
+          </material>
+        </particle_emitter>
+      </link>
+    </model>
+    <model name="fire_core">
+      <static>true</static>
+      <pose>13 3 0 0 0 0</pose>
+      <link name="structure">
+        <visual name="charred_pallet">
+          <pose>0 0 0.12 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.2 0.9 0.24</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.08 0.04 1</ambient>
+            <diffuse>0.12 0.08 0.04 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+        <collision name="charred_pallet_collision">
+          <pose>0 0 0.12 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>1.2 0.9 0.24</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="embers">
+          <pose>0 0 0.27 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.75 0.65 0.08</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.10 0.01 1</ambient>
+            <diffuse>0.6 0.10 0.01 1</diffuse>
+            <pbr>
+              <metal>
+                <metalness>0</metalness>
+                <roughness>0.8</roughness>
+              </metal>
+            </pbr>
+            <emissive>1 0.22 0.015 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>
