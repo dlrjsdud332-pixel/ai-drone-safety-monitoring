@@ -1,53 +1,79 @@
-# AI 드론 산업안전 관제
+# AI 드론 안전 관제 시스템
 
-영상 속 사람·차량과 안전 사건을 탐지하고, 운영자가 **모의 순찰이 멈춘 이유와 다음에 할 조작**을 확인할 수 있도록 만든 Python 관제 프로젝트입니다. 초기 OpenCV 탐지 화면에서 시작해 PySide6 다중 영상 관제, PX4/Gazebo 연동 실험, 규칙 기반 모의 순찰로 발전했습니다.
+**영상에서 안전 사건을 감지하고, 운영자가 모의 순찰을 멈춘 이유와 다음에 할 조작을 확인할 수 있는 Python 데스크톱 관제 시스템입니다.**
 
-**Python · OpenCV · YOLO · PySide6 · PX4/MAVLink · Gazebo**
+Python · PySide6 · OpenCV · YOLO11 · ByteTrack · SQLite · PX4/MAVLink · Gazebo
 
-## 개발 과정
+![Gazebo 녹화 영상에서 작업자 추적 ID와 관제 상태를 표시한 1화면 UI](assets/monitoring-single.png)
 
-| 단계 | 구현과 검증 | 개발 기록 |
-| --- | --- | --- |
-| 1. 영상 탐지 | OpenCV와 YOLO로 사람·차량을 탐지하고 추적했습니다. 위험구역 표시와 이벤트 기록을 추가했습니다. | [첫 공개 커밋](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/commit/5b60eb8) |
-| 2. 다중 영상 관제 | PySide6에서 1·2·4화면 전환, 영상 재생과 시간 이동, 대상·영역 확대를 구현했습니다. 다각형 위험구역, 보호구 미착용, 넘어짐 의심 이벤트를 화면과 CSV에 기록했습니다. | [관제 UI와 실행 가이드](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/blob/5f686341610588231ffd2017b6fb5b480d5e33c4/README.md) |
-| 3. 관제와 시뮬레이션 연동 | 이벤트 필터링·저장을 개선하고, PX4/MAVLink 관측과 Gazebo X500 카메라 연동을 실험했습니다. | [이벤트 저장 개선](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/commit/b4a28a7) · [PX4/Gazebo 프로토타입 검증 기록](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/blob/release/prototype-v0.1/docs/VALIDATION_REPORT.md) |
-| 4. 운영자 확인 기반 모의 순찰 | 상태와 판단 이유를 표시하고, 사건 유형별 재개 조건과 관측 유실·만료 처리를 구현했습니다. | 아래 설계 및 최신 개발본 검증 참고 |
+[**관제 시연 영상 보기 · 13초**](assets/gazebo-monitoring-demo.mp4) · [4분할 화면](assets/monitoring-quad.png) · [시뮬레이터 카메라 입력 예시](assets/wildseed-camera.mp4)
 
-### 초기 개발 자료 · 2026년 9~10월
+시연에서는 Gazebo 녹화 영상을 관제 앱에 입력해 작업자 추적 ID와 상태 패널을 확인할 수 있습니다. 4분할 화면 예시는 첫 번째 채널에 영상이 연결된 상태입니다.
 
-![초기 PySide6 4분할 영상 관제 화면](https://raw.githubusercontent.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/5f686341610588231ffd2017b6fb5b480d5e33c4/docs/images/main_screen.png)
+## 해결한 문제
 
-*4분할 영상 관제 UI의 초기 화면입니다. 선택한 영상과 확대 화면, 안전 이벤트를 함께 확인할 수 있습니다.*
+영상이 끊기면 탐지 경고도 사라질 수 있습니다. 이때 운영자가 위험이 해소됐다고 판단하면 순찰을 잘못 재개할 수 있습니다. 이를 방지하기 위해 **관측의 유효성, 운영자의 사건 확인, 모의 순찰 재개**를 각각 판단하도록 설계했습니다.
 
-[초기 영상 탐지 시연 보기 또는 다운로드 · MP4 약 40초](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/blob/333486b812ff937c8a917e374cabddb3589c874d/docs/drone_safety_demo.mp4)
-
-## 모의 순찰 설계
-
-탐지 결과만 표시하면 운영자가 순찰이 왜 멈췄는지 알기 어렵습니다. 영상이 끊겨 경고가 사라지면 위험이 해제됐다고 오인할 수 있습니다.
-
-- 화면에 **현재 상태, 판단 이유, 관측 카메라와 사건, 다음 조작**을 함께 표시합니다.
-- 작업자 탐지 시 모의 순찰을 대기시킵니다. 운영자가 **사건 확인 → 재개 요청 → 별도 START 조작**을 순서대로 수행하면 재개할 수 있습니다.
-- 화재는 운영자가 사건을 확인한 뒤에도 모의 순찰 재개를 차단합니다.
-- 관측이 끊기거나 유효 시간이 지나면 **판단 불가**를 표시합니다. 관측 소스가 바뀌면 새 세션을 요구해 이전 결과가 현재 판단에 섞이는 것을 막습니다.
-
-## 검증 범위
-
-| 검증 대상 | 확인 내용 |
+| 상황 | 시스템 동작 |
 | --- | --- |
-| 최신 로컬 개발본 | 관련 회귀 테스트 **43개 통과**. Qt 화면에 합성 사건을 입력해 작업자 탐지에 따른 대기, 재개 요청, 화재 재개 차단, 소스 변경 안내를 확인했습니다. |
-| 이전 개발본 | 웹캠과 PX4 SITL **읽기 전용 관제**를 약 10분간 검증했습니다. |
-| 실기체 | 실제 드론 연결과 비행은 검증 전입니다. |
+| 작업자 탐지 | 모의 순찰을 대기시키고 사건 검토를 요청합니다. 재개는 **사건 확인 → 재개 요청 → START** 순서로 진행합니다. |
+| 화재 사건 확인 | 확인 이력을 기록하고 순찰 재개를 차단합니다. |
+| 관측 끊김·만료 | **판단 불가**를 표시하고 재개를 차단합니다. |
+| 영상 소스 변경 | 새 세션을 요구하고 이전 세션의 관측을 현재 판단에서 제외합니다. |
 
-이 표의 최신 검증 결과는 로컬 개발본 기준입니다. 공개 저장소에서 확인할 수 있는 구현은 아래 코드 안내를 참고하세요.
+화면에는 현재 상태와 대기 이유, 관측 카메라와 사건, 다음에 가능한 조작을 함께 표시합니다.
 
-## 공개 코드 찾아보기
-
-| 경로 | 역할 |
+| 작업자 사건 검토 | 재개 요청 후 START 대기 |
 | --- | --- |
-| [`main.py`](main.py) | 다중 영상 PySide6 관제 UI |
-| [`ai_tracker.py`](ai_tracker.py), [`ai_worker.py`](ai_worker.py) | 객체 탐지·추적과 영상 분석 작업 |
-| [`ppe_detector.py`](ppe_detector.py), [`fall_detector.py`](fall_detector.py) | 보호구 검사와 넘어짐 의심 감지 |
-| [`legacy/drone_tracker.py`](legacy/drone_tracker.py) | OpenCV 관제와 에이전트 개발 이력이 남은 실행 파일 |
-| [`release/prototype-v0.1`](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/tree/release/prototype-v0.1) | Gazebo 연동 자료와 검증 문서가 있는 프로토타입 브랜치 |
+| ![작업자 탐지 후 운영자 확인을 기다리는 화면](assets/01_worker_review.png) | ![재개 요청 후 별도 START를 안내하는 화면](assets/02_resume_requested.png) |
+| **화재 확인 후 재개 차단** | **소스 변경 후 새 세션 안내** |
+| ![화재 사건 확인 뒤에도 재개가 차단된 화면](assets/03_fire_blocked.png) | ![소스 변경 후 새 세션이 필요한 화면](assets/04_source_changed.png) |
 
-공개 영상 관제 UI의 모델 준비, 설치, 실행 및 화면 조작은 [기존 실행 가이드](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/blob/5f686341610588231ffd2017b6fb5b480d5e33c4/README.md#설치-및-실행)에 정리되어 있습니다.
+*Qt 관제 화면에 합성 사건을 입력해 확인한 결과입니다.*
+
+## 주요 구현과 코드
+
+| 구현 | 코드 |
+| --- | --- |
+| **영상 분석·관제 UI** · OpenCV로 영상을 읽고 YOLO11과 ByteTrack으로 사람·차량을 추적합니다. PySide6에서 1·2·4분할, 대상·영역 확대, 위험구역과 안전 사건을 표시합니다. | [관제 진입점](app/tools/integration/__main__.py) · [영상 분석](app/legacy/drone_tracker.py) |
+| **사건 검토·기록** · 관측 결과를 검토할 사건으로 등록하고 운영자의 확인 이력을 SQLite에 저장합니다. | [사건 처리](app/tools/control_agent/core.py) · [이력 저장](app/tools/control_agent/store.py) |
+| **모의 순찰 상태 전이** · 관측 유효기간과 세션을 확인하고, 사건 유형과 운영자 입력에 따라 대기·재개 여부를 결정합니다. | [순찰 로직](app/tools/automation/patrol.py) · [관측 처리](app/tools/integration/observation.py) |
+
+## 검증 결과
+
+| 검증 대상 | 결과 |
+| --- | --- |
+| 전체 개발 저장소 | 모의 순찰, 관제 연결, 화면 표시, 소스 전환, 텔레메트리 내보내기 관련 **로컬 테스트 71개 통과** 기록 |
+| 포트폴리오 패키지 | 개발 Mac에서 녹화 영상으로 관제 실행과 화재 이벤트 표시 확인. 합성 사건 데모에서 작업자 확인·START 후 재개와 화재 확인 후 재개 차단 재현 |
+| 이전 PX4 SITL 개발본 | 웹캠과 PX4 SITL **읽기 전용 관제 600.33초** 실행. 초기 60초를 제외한 평균 화면 표시 속도 **23.41 FPS** |
+
+이 패키지는 웹캠·로컬 영상 관제와 모의 순찰을 시연합니다. 실기체 연결, 실제 비행, 현장 탐지 정확도와 지연 시간은 검증 전입니다.
+
+## 실행 방법
+
+**모의 순찰 로직만 확인**하려면 저장소 루트에서 실행합니다. Python 표준 라이브러리만 사용합니다.
+
+```bash
+python3 app/demo.py
+```
+
+<details>
+<summary>Mac에서 관제 화면 실행</summary>
+
+1. FFmpeg와 Python 3.10을 준비한 뒤 프로젝트 루트에서 실행합니다.
+
+   ```bash
+   python3.10 -m venv .venv
+   .venv/bin/python -m pip install -r requirements.txt
+   ```
+
+2. 사용 권한이 있는 모델 가중치 `yolo11s.pt`, `yolo11n-pose.pt`, `ppe_best.pt`를 `app/models/`에 배치합니다. 화재·연기 탐지 모델 `fire_smoke_best.pt`는 선택 사항입니다.
+3. `01_관제_실행.command`를 더블클릭하면 웹캠으로 시작합니다. 녹화 영상으로 시작하려면 아래 명령을 실행합니다.
+
+   ```bash
+   ./01_관제_실행.command --source "/절대경로/영상.mp4"
+   ```
+
+4. 관제 창에서 **T**는 모의 순찰, **A**는 사건 검토를 엽니다.
+
+</details>

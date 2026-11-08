@@ -1,4 +1,10 @@
-ultralytics
-opencv-python
-yt-dlp
-matplotlib
+# Observed working local Python 3.10.21 environment, not a fresh-install test.
+ultralytics==8.4.178
+opencv-python==4.11.0.86
+numpy==1.26.4
+torch==2.14.0
+torchvision==0.29.0
+PySide6==6.11.2
+yt-dlp==2026.8.19
+matplotlib==3.10.9
+pymavlink==2.4.50
