@@ -31,13 +31,52 @@ Python · PySide6 · OpenCV · YOLO11 · ByteTrack · SQLite · PX4/MAVLink · G
 
 *Qt 관제 화면에 합성 사건을 입력해 확인한 결과입니다.*
 
-## 주요 구현과 코드
+## 주요 기능
 
-| 구현 | 코드 |
+| 기능 | 설명 |
 | --- | --- |
-| **영상 분석·관제 UI** · OpenCV로 영상을 읽고 YOLO11과 ByteTrack으로 사람·차량을 추적합니다. PySide6에서 1·2·4분할, 대상·영역 확대, 위험구역과 안전 사건을 표시합니다. | [관제 진입점](app/tools/integration/__main__.py) · [영상 분석](app/legacy/drone_tracker.py) |
-| **사건 검토·기록** · 관측 결과를 검토할 사건으로 등록하고 운영자의 확인 이력을 SQLite에 저장합니다. | [사건 처리](app/tools/control_agent/core.py) · [이력 저장](app/tools/control_agent/store.py) |
-| **모의 순찰 상태 전이** · 관측 유효기간과 세션을 확인하고, 사건 유형과 운영자 입력에 따라 대기·재개 여부를 결정합니다. | [순찰 로직](app/tools/automation/patrol.py) · [관측 처리](app/tools/integration/observation.py) |
+| **영상 관제** | 웹캠 또는 로컬 영상에서 작업자·차량을 탐지하고 추적 ID를 표시합니다. 여러 영상 파일을 입력해 채널별로 확인할 수 있습니다. |
+| **화면 조작** | 단일·분할 화면 전환, 채널 선택, 대상·영역 확대, 위험구역 표시를 지원합니다. |
+| **안전 사건 검토** | 작업자, 보호구 미착용, 넘어짐 의심 등 영상에서 얻은 관측을 검토합니다. 운영자 확인 이력은 SQLite에 저장합니다. |
+| **모의 순찰** | 작업자 사건 검토 후 재개를 요청할 수 있습니다. 화재나 관측 유실·만료 시 재개를 차단하며, 소스 변경 시 새 세션을 요구합니다. |
+
+### 화면별 지원 범위
+
+| 화면 | 표시·조작 범위 |
+| --- | --- |
+| **1화면** | 선택한 채널을 크게 표시합니다. 대상·영역 확대와 우측 관제 상태 패널을 확인할 수 있습니다. |
+| **2·4분할** | 입력이 연결된 채널의 영상과 탐지 결과를 함께 표시합니다. 채널을 더블클릭하면 해당 채널을 1화면으로 볼 수 있습니다. |
+| **입력이 없는 채널** | 분할 화면에서 `영상 없음`으로 표시합니다. README의 4분할 캡처는 첫 번째 채널에만 영상이 연결된 예시입니다. |
+
+## 사용 기술
+
+| 기술 | 사용 범위 |
+| --- | --- |
+| **Python · PySide6 · OpenCV** | 데스크톱 UI, 영상 입력·처리, 관제 화면 렌더링 |
+| **Ultralytics YOLO11 · ByteTrack · PyTorch** | 객체 탐지, 추적 ID 부여, 모델 추론 |
+| **SQLite** | 사건과 운영자 검토 이력 저장 |
+| **Gazebo · PX4 SITL · MAVLink** | Gazebo 녹화 영상 시연과 이전 개발본의 PX4 읽기 전용 상태 수신 검증 |
+
+## 파일 구성
+
+| 위치 | 역할 |
+| --- | --- |
+| [`01_관제_실행.command`](01_관제_실행.command) · [`requirements.txt`](requirements.txt) | Mac 실행 스크립트와 Python 의존성 |
+| [`app/demo.py`](app/demo.py) | 모델 없이 실행하는 모의 순찰 데모 |
+| [`app/tools/integration/`](app/tools/integration/) · [`app/legacy/drone_tracker.py`](app/legacy/drone_tracker.py) | 관제 앱 진입점, 화면 표시, 영상 탐지·추적 |
+| [`app/tools/control_agent/`](app/tools/control_agent/) · [`app/tools/automation/patrol.py`](app/tools/automation/patrol.py) | 사건 검토·저장과 모의 순찰 상태 전이 |
+| [`assets/`](assets/) | 관제 화면, 합성 사건 검증 캡처, 시연 영상 |
+
+## 모델 구성
+
+| 모델 파일 | 용도 | GUI 실행 시 |
+| --- | --- | --- |
+| `yolo11s.pt` | 사람·차량 탐지 및 추적 | 필수 |
+| `yolo11n-pose.pt` | 자세 추정 기반 넘어짐 의심 감지 | 필수 |
+| `ppe_best.pt` | 안전모·안전조끼 착용 여부 감지 | 필수 |
+| `fire_smoke_best.pt` | 영상의 화재·연기 탐지 | 선택 |
+
+모델 가중치는 별도로 준비해 `app/models/`에 배치합니다. `python3 app/demo.py`로 실행하는 합성 사건 데모는 모델 없이도 화재 사건의 재개 차단을 확인할 수 있습니다.
 
 ## 검증 결과
 
