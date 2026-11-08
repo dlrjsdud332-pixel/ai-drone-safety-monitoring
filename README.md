@@ -4,14 +4,6 @@
 
 **Python · OpenCV · YOLO · PySide6 · PX4/MAVLink · Gazebo**
 
-## 실행 화면과 시연
-
-![초기 PySide6 4분할 영상 관제 화면](https://raw.githubusercontent.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/5f686341610588231ffd2017b6fb5b480d5e33c4/docs/images/main_screen.png)
-
-*4분할 영상 관제 UI의 초기 화면입니다. 선택한 영상과 확대 화면, 안전 이벤트를 함께 확인할 수 있습니다.*
-
-[초기 영상 탐지 시연 보기 또는 다운로드 · MP4 약 40초](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/blob/333486b812ff937c8a917e374cabddb3589c874d/docs/drone_safety_demo.mp4)
-
 ## 개발 과정
 
 | 단계 | 구현과 검증 | 개발 기록 |
@@ -20,6 +12,14 @@
 | 2. 다중 영상 관제 | PySide6에서 1·2·4화면 전환, 영상 재생과 시간 이동, 대상·영역 확대를 구현했습니다. 다각형 위험구역, 보호구 미착용, 넘어짐 의심 이벤트를 화면과 CSV에 기록했습니다. | [관제 UI와 실행 가이드](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/blob/5f686341610588231ffd2017b6fb5b480d5e33c4/README.md) |
 | 3. 관제와 시뮬레이션 연동 | 이벤트 필터링·저장을 개선하고, PX4/MAVLink 관측과 Gazebo X500 카메라 연동을 실험했습니다. | [이벤트 저장 개선](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/commit/b4a28a7) · [PX4/Gazebo 프로토타입 검증 기록](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/blob/release/prototype-v0.1/docs/VALIDATION_REPORT.md) |
 | 4. 운영자 확인 기반 모의 순찰 | 상태와 판단 이유를 표시하고, 사건 유형별 재개 조건과 관측 유실·만료 처리를 구현했습니다. | 아래 설계 및 최신 개발본 검증 참고 |
+
+### 초기 개발 자료 · 2026년 9~10월
+
+![초기 PySide6 4분할 영상 관제 화면](https://raw.githubusercontent.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/5f686341610588231ffd2017b6fb5b480d5e33c4/docs/images/main_screen.png)
+
+*4분할 영상 관제 UI의 초기 화면입니다. 선택한 영상과 확대 화면, 안전 이벤트를 함께 확인할 수 있습니다.*
+
+[초기 영상 탐지 시연 보기 또는 다운로드 · MP4 약 40초](https://github.com/dlrjsdud332-pixel/ai-drone-safety-monitoring/blob/333486b812ff937c8a917e374cabddb3589c874d/docs/drone_safety_demo.mp4)
 
 ## 모의 순찰 설계
 
